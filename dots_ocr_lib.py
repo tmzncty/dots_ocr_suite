@@ -203,13 +203,22 @@ def layoutjson2md(image, cells, text_key='text', no_page_hf=False):
 # SECTION 4: INFERENCE (from model.inference)
 # ==============================================================================
 
-def inference_with_vllm(image, prompt, ip="localhost", port=8000, temperature=0.1, top_p=0.9, max_completion_tokens=32768, model_name='model', timeout=600.0):
+import time
+
+def inference_with_vllm(image, prompt, ip="localhost", port=8000, temperature=0.1, top_p=0.9, max_completion_tokens=32768, model_name='model', timeout=600.0, max_retries=3):
     client = OpenAI(api_key=os.environ.get("API_KEY", "0"), base_url=f"http://{ip}:{port}/v1")
     messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": PILimage_to_base64(image)}}, {"type": "text", "text": f"<|img|><|imgpad|><|endofimg|>{prompt}"}]}]
-    try:
-        resp = client.chat.completions.create(messages=messages, model=model_name, max_tokens=max_completion_tokens, temperature=temperature, top_p=top_p, timeout=timeout)
-        return resp.choices[0].message.content
-    except requests.exceptions.RequestException as e: print(f"Request error: {e}"); return None
+    
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(messages=messages, model=model_name, max_tokens=max_completion_tokens, temperature=temperature, top_p=top_p, timeout=timeout)
+            return resp.choices[0].message.content
+        except Exception as e:
+            print(f"Request error (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait 2 seconds before retrying
+            else:
+                return None
 
 # ==============================================================================
 # SECTION 5: MAIN PARSER CLASS (from parser.py)

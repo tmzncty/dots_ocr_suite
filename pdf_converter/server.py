@@ -12,6 +12,9 @@ import hashlib
 import zipfile
 import traceback
 import time
+import logging
+from logging.handlers import RotatingFileHandler
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, quote
 from multiprocessing import Pool
@@ -40,6 +43,26 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+# 配置日志
+log_file = LOG_DIR / "server.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# 调整第三方库的日志级别
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 # 初始化 Parser
 parser = DotsOCRParser(
@@ -47,7 +70,8 @@ parser = DotsOCRParser(
     port=8000,
     dpi=150,
     min_pixels=3136,
-    max_pixels=11289600
+    max_pixels=11289600,
+    timeout=2000.0
 )
 
 # 处理状态存储
@@ -61,7 +85,7 @@ def log_to_state(hash_id, message):
     """添加日志到处理状态"""
     if hash_id in processing_state:
         processing_state[hash_id]['log'] = message
-        print(f"[{hash_id}] {message}")
+        logger.info(f"[{hash_id}] {message}")
 
 def get_file_hash(file_data, length=8):
     """获取文件的SHA256哈希"""
@@ -89,7 +113,7 @@ def extract_page_image(args):
         
         return str(image_path)
     except Exception as e:
-        print(f"Error extracting page {page_idx}: {e}")
+        logger.error(f"Error extracting page {page_idx}: {e}")
         return None
 
 def process_single_page(args):
@@ -196,8 +220,22 @@ def markdown_to_docx(md_content, output_path):
     
     doc.save(output_path)
 
+def create_txt_file(md_content, output_path):
+    """将Markdown内容保存为TXT文件"""
+    # 简单去除一些Markdown标记，或者直接保存
+    # 这里选择直接保存内容，因为用户说"MARKDOWN变成txt"
+    # 可以考虑去除图片标记等
+    txt_content = md_content
+    # 去除图片标记 ![...](...)
+    txt_content = re.sub(r'!\[.*?\]\(.*?\)', '[图片]', txt_content)
+    # 去除公式标记 $$...$$ (保留内容)
+    # txt_content = re.sub(r'\$\$(.*?)\$\$', r'\1', txt_content, flags=re.DOTALL)
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(txt_content)
+
 def create_zip_package(base_dir, base_name, hash_id):
-    """创建包含DOCX、MD、JSON的ZIP包"""
+    """创建包含DOCX、MD、JSON、TXT的ZIP包"""
     zip_name = f"{base_name}_{hash_id}.zip"
     zip_path = base_dir / zip_name
     
@@ -209,6 +247,10 @@ def create_zip_package(base_dir, base_name, hash_id):
         md_file = base_dir / f"{base_name}_{hash_id}_combined.md"
         if md_file.exists():
             zipf.write(md_file, f"{base_name}_{hash_id}.md")
+            
+        txt_file = base_dir / f"{base_name}_{hash_id}_combined.txt"
+        if txt_file.exists():
+            zipf.write(txt_file, f"{base_name}_{hash_id}.txt")
         
         json_file = base_dir / f"{base_name}_{hash_id}_combined.json"
         if json_file.exists():
@@ -287,7 +329,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
             ]
             
             image_paths = []
-            with Pool() as pool:
+            with Pool(processes=4) as pool:
                 for i, img_path in enumerate(pool.imap(extract_page_image, extract_args)):
                     image_paths.append(img_path)
                     progress = 20 + (i + 1) / len(extract_args) * 80
@@ -329,18 +371,43 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         ]
         
         results = []
-        with Pool() as pool:
-            for i, result in enumerate(pool.imap(process_single_page, args_list)):
+        ocr_start_time = time.time()
+        total_tasks = len(args_list)
+        
+        # 限制并发数为 4，防止请求过多导致超时
+        with Pool(processes=4) as pool:
+            # 使用 imap_unordered 以便更快更新进度
+            for i, result in enumerate(pool.imap_unordered(process_single_page, args_list)):
                 if result:
                     results.append(result)
-                progress = (i + 1) / len(args_list) * 100
+                
+                # 计算进度和速度
+                completed_count = i + 1
+                progress = completed_count / total_tasks * 100
+                
+                elapsed_time = time.time() - ocr_start_time
+                speed = completed_count / elapsed_time if elapsed_time > 0 else 0 # pages per second
+                avg_time_per_page = elapsed_time / completed_count if completed_count > 0 else 0
+                remaining_tasks = total_tasks - completed_count
+                remaining_time = remaining_tasks * avg_time_per_page
+                
+                # 计算预计完成时间 (UTC+8)
+                utc_now = datetime.now(timezone.utc)
+                utc_plus_8 = timezone(timedelta(hours=8))
+                eta_time = utc_now + timedelta(seconds=remaining_time)
+                eta_str = eta_time.astimezone(utc_plus_8).strftime("%H:%M:%S")
+                
+                status_msg = f'Page {completed_count}/{total_tasks} | Speed: {speed:.2f} p/s | ETA: {eta_str}'
+                
                 processing_state[hash_id].update({
                     'ocr_progress': progress,
-                    'ocr_status': f'Page {i+1}/{len(args_list)}'
+                    'ocr_status': status_msg,
+                    'speed': f"{speed:.2f}",
+                    'eta': eta_str,
+                    'remaining_time': f"{remaining_time:.0f}s"
                 })
+                
                 if not skip_existing or (skip_existing and "already processed" not in processing_state[hash_id].get('log', '')):
-                     # Only log if actually processing or if it's the first skip message (to avoid spamming log)
-                     # Actually, process_single_page logs too.
                      pass
         
         processing_state[hash_id].update({
@@ -424,6 +491,11 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         
         log_to_state(hash_id, "合并的Markdown已保存")
         
+        # 保存合并的TXT
+        combined_txt_path = work_dir / f"{base_name}_{hash_id}_combined.txt"
+        create_txt_file(combined_md, str(combined_txt_path))
+        log_to_state(hash_id, "合并的TXT已保存")
+
         processing_state[hash_id].update({
             'generate_progress': 75,
             'generate_status': 'Creating DOCX...'
@@ -467,7 +539,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
             'complete': True,
             'error': error_msg
         })
-        print(f"Processing error: {traceback.format_exc()}")
+        logger.error(f"Processing error: {traceback.format_exc()}")
 
 # ==============================================================================
 # Server Handler
@@ -475,7 +547,11 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
 class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """自定义日志输出"""
-        print(f"{self.address_string()} - {format%args}")
+        # 过滤掉 /progress/ 请求的日志，避免刷屏
+        if self.path.startswith('/progress/'):
+            return
+            
+        logger.info(f"{self.address_string()} - {format%args}")
     
     def do_GET(self):
         try:
@@ -534,6 +610,11 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                             docx_path = item / f"{base_name}_{hash_id}.docx"
                             if docx_path.exists():
                                 self.send_file(docx_path, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                                return
+                        elif file_type == 'txt':
+                            txt_path = item / f"{base_name}_{hash_id}_combined.txt"
+                            if txt_path.exists():
+                                self.send_file(txt_path, 'text/plain')
                                 return
                 
                 self.send_error(404, "File not found")
@@ -623,9 +704,9 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
     def send_file(self, file_path, content_type):
         """发送文件"""
         try:
-            print(f"Sending file: {file_path}")
+            logger.info(f"Sending file: {file_path}")
             if not file_path.exists():
-                print(f"File not found: {file_path}")
+                logger.warning(f"File not found: {file_path}")
                 self.send_error(404, "File not found")
                 return
 
@@ -639,27 +720,18 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 # URL编码文件名
                 encoded_name = quote(filename)
                 
-                # 打印调试信息
-                print(f"Original filename: {filename}")
-                print(f"Encoded filename: {encoded_name}")
-                
                 # 设置 Content-Disposition
                 # 优先使用 filename*=UTF-8'' 格式
                 header_value = f"attachment; filename*=UTF-8''{encoded_name}"
                 
-                # 尝试添加 ASCII 兼容的 filename 参数（可选，为了兼容旧浏览器）
-                # safe_filename = filename.encode('ascii', 'ignore').decode('ascii') or "download.file"
-                # header_value += f'; filename="{safe_filename}"'
-                
-                print(f"Content-Disposition: {header_value}")
                 self.send_header('Content-Disposition', header_value)
                 
                 self.send_header('Content-Length', str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
-                print("File sent successfully")
+                logger.info(f"File sent successfully: {filename} ({len(content)} bytes)")
         except Exception as e:
-            print(f"Error sending file: {traceback.format_exc()}")
+            logger.error(f"Error sending file: {traceback.format_exc()}")
             self.send_error(500, f"Error sending file: {str(e)}")
 
     def send_json_error(self, code, message):
@@ -707,7 +779,7 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 hash_id = get_file_hash(file_data)
                 base_name = Path(filename).stem
                 
-                print(f"Processing: {filename} (hash: {hash_id}, mode: {process_mode})")
+                logger.info(f"Received upload: {filename} (Size: {len(file_data)} bytes, Hash: {hash_id}, Mode: {process_mode})")
                 
                 # 创建工作目录
                 work_dir = DATA_DIR / f"{base_name}_{hash_id}"
@@ -728,6 +800,8 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                             'filename': filename,
                             'total_pages': pages
                         }
+                        
+                        logger.info(f"File already exists: {filename} ({hash_id})")
                         
                         response_data = json.dumps(response).encode('utf-8')
                         self.send_response(200)
@@ -757,6 +831,7 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 }
                 
                 # 启动后台处理
+                logger.info(f"Starting background processing for {filename} ({hash_id})")
                 thread = threading.Thread(
                     target=process_pdf_background,
                     args=(pdf_path, work_dir, base_name, hash_id, process_mode, filename)
@@ -810,6 +885,8 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                     self.send_json_error(404, "PDF file not found")
                     return
                 
+                logger.info(f"Reprocessing task: {base_name} ({hash_id})")
+                
                 # Reset state
                 processing_state[hash_id] = {
                     'extract_progress': 0,
@@ -843,7 +920,7 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
             self.send_json_error(404, "Not found")
         
         except Exception as e:
-            print(f"Error in do_POST: {traceback.format_exc()}")
+            logger.error(f"Error in do_POST: {traceback.format_exc()}")
             error_response = json.dumps({"error": str(e)}).encode('utf-8')
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
@@ -871,10 +948,11 @@ def run(port=PORT):
     print("=" * 60)
     print(f"PDF to DOCX Converter Server")
     print("=" * 60)
-    print(f"Server running on port {port}")
+    logger.info(f"Server running on port {port}")
     print(f"Open: http://localhost:{port}")
     print(f"Data directory: {DATA_DIR.resolve()}")
     print(f"Static files: {STATIC_DIR.resolve()}")
+    print(f"Logs directory: {LOG_DIR.resolve()}")
     print("=" * 60)
     print("Press Ctrl+C to stop the server")
     print()

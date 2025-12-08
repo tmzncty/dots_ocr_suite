@@ -37,6 +37,9 @@ _archive/
 *.log
 *.json
 *.md
+*.png
+*.jpg
+*.jpeg
 !README.md
 !pdf_converter/static/index.html
 !pdf_converter/static/style.css

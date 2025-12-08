@@ -261,6 +261,7 @@ async function loadExistingFiles() {
                     </div>
                     <button onclick="downloadExisting('${file.hash_id}', 'zip')">📦 ZIP</button>
                     <button class="secondary" onclick="downloadExisting('${file.hash_id}', 'docx')">📄 DOCX</button>
+                    <button class="secondary" onclick="downloadExisting('${file.hash_id}', 'txt')">📄 TXT</button>
                     <button class="secondary" onclick="downloadExisting('${file.hash_id}', 'images_zip')">🖼️ Images</button>
                     <button class="warning" onclick="reprocessFile('${file.hash_id}')" style="background-color: #ff9800;">🔄 Reprocess</button>
                 `;
