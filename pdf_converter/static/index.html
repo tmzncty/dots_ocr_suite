@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to DOCX Converter</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📄 PDF to DOCX Converter</h1>
+            <div class="subtitle">Powered by Dots OCR - Convert PDF documents to editable DOCX with AI</div>
+        </header>
+        
+        <div class="upload-section">
+            <div class="file-drop-zone" id="dropZone">
+                <div class="icon">📤</div>
+                <div class="text">
+                    <strong>Click to upload</strong> or drag and drop<br>
+                    PDF files only
+                </div>
+            </div>
+            <input type="file" id="fileInput" accept="application/pdf" style="display: none;">
+            
+            <div class="options">
+                <div class="option">
+                    <input type="radio" id="processSingle" name="processMode" value="single">
+                    <label for="processSingle">Process Current Page Only</label>
+                </div>
+                <div class="option">
+                    <input type="radio" id="processAll" name="processMode" value="all" checked>
+                    <label for="processAll">Process Entire PDF</label>
+                </div>
+            </div>
+        </div>
+        
+        <div class="progress-section" id="progressSection" style="display: none;">
+            <h3>Processing...</h3>
+            
+            <!-- 拆图进度 -->
+            <div class="progress-item">
+                <div class="progress-label">
+                    <span>📄 Extracting PDF Pages</span>
+                    <span id="extractStatus">Waiting...</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="extractProgress" style="width: 0%">0%</div>
+                </div>
+            </div>
+            
+            <!-- OCR进度 -->
+            <div class="progress-item">
+                <div class="progress-label">
+                    <span>🔍 OCR Processing</span>
+                    <span id="ocrStatus">Waiting...</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="ocrProgress" style="width: 0%">0%</div>
+                </div>
+            </div>
+            
+            <!-- 生成文档进度 -->
+            <div class="progress-item">
+                <div class="progress-label">
+                    <span>📝 Generating Documents</span>
+                    <span id="generateStatus">Waiting...</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="generateProgress" style="width: 0%">0%</div>
+                </div>
+            </div>
+            
+            <!-- 日志输出 -->
+            <div class="log-section">
+                <h4>📋 Processing Log</h4>
+                <div class="log-output" id="logOutput"></div>
+            </div>
+        </div>
+        
+        <div class="result-section" id="resultSection" style="display: none;">
+            <h3>✅ Conversion Complete!</h3>
+            <div class="result-info" id="resultInfo"></div>
+            <div class="download-buttons">
+                <button onclick="downloadFile('zip')">📦 Download ZIP Package</button>
+                <button class="secondary" onclick="downloadFile('docx')">📄 Download DOCX Only</button>
+            </div>
+        </div>
+        
+        <div class="existing-files" id="existingFiles" style="display:none;">
+            <h3>Previously Converted Files</h3>
+            <div id="fileList"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

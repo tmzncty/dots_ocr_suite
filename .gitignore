@@ -1,0 +1,43 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.vscode/
+.idea/
+.lh/
+
+# Data directories
+server_data/
+server_data_test/
+pdf_converter/data/
+1/
+1_ocr/
+New folder (2)/
+New folder (2)_ocr/
+resources/
+resources_2ocr/
+resources_ocr/
+测试：印鐙牋/
+测试：印鐙牋_2ocr/
+测试：印鐙牋_ocr/
+
+# Archive
+_archive/
+
+# Files
+*.zip
+*.pdf
+*.log
+*.json
+*.md
+!README.md
+!pdf_converter/static/index.html
+!pdf_converter/static/style.css
+!pdf_converter/static/app.js

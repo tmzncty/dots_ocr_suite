@@ -1,0 +1,6 @@
+pymupdf
+requests
+tqdm
+openai
+Pillow
+python-docx
