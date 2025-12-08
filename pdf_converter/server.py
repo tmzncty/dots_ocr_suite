@@ -17,6 +17,8 @@ from urllib.parse import unquote, quote
 from multiprocessing import Pool
 import threading
 import sys
+import fitz  # PyMuPDF
+from PIL import Image
 
 # 添加父目录到路径以导入库
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -65,12 +67,56 @@ def get_file_hash(file_data, length=8):
     """获取文件的SHA256哈希"""
     return hashlib.sha256(file_data).hexdigest()[:length]
 
+def extract_page_image(args):
+    """Extract a single page from PDF and save as image"""
+    pdf_path, page_idx, dpi, output_dir = args
+    
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc[page_idx]
+        
+        # Use the same logic as fitz_doc_to_image in dots_ocr_lib
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pm = page.get_pixmap(matrix=mat, alpha=False)
+        
+        # Check size limit (from dots_ocr_lib)
+        if pm.width > 4500 or pm.height > 4500:
+            mat = fitz.Matrix(72 / 72, 72 / 72)
+            pm = page.get_pixmap(matrix=mat, alpha=False)
+            
+        image_path = Path(output_dir) / f"page_{page_idx:04d}.jpg"
+        pm.save(str(image_path))
+        
+        return str(image_path)
+    except Exception as e:
+        print(f"Error extracting page {page_idx}: {e}")
+        return None
+
 def process_single_page(args):
     """处理单个页面（多进程）"""
-    origin_image, save_dir, save_name, page_idx, hash_id = args
+    image_path, save_dir, save_name, page_idx, hash_id, skip_existing = args
     
+    # Check if output exists
+    json_path = Path(save_dir) / f"{save_name}_page_{page_idx}.json"
+    md_path = Path(save_dir) / f"{save_name}_page_{page_idx}.md"
+    
+    if skip_existing and json_path.exists() and md_path.exists():
+        log_to_state(hash_id, f"Page {page_idx+1} already processed, skipping OCR.")
+        return {
+            'page_no': page_idx,
+            'layout_info_path': str(json_path),
+            'md_content_path': str(md_path)
+        }
+
     log_to_state(hash_id, f"正在处理第 {page_idx + 1} 页...")
     
+    # Load image from path
+    try:
+        origin_image = Image.open(image_path)
+    except Exception as e:
+        log_to_state(hash_id, f"Error loading image {image_path}: {e}")
+        return None
+
     result = parser._parse_single_image(
         origin_image=origin_image,
         prompt_mode='prompt_layout_all_en',
@@ -170,7 +216,19 @@ def create_zip_package(base_dir, base_name, hash_id):
     
     return zip_path
 
-def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode, filename):
+def create_images_zip(base_dir, base_name, hash_id, image_paths):
+    """Create a zip file containing all extracted images"""
+    zip_name = f"{base_name}_{hash_id}_images.zip"
+    zip_path = base_dir / zip_name
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for img_path in image_paths:
+            if img_path and os.path.exists(img_path):
+                zipf.write(img_path, os.path.basename(img_path))
+                
+    return zip_path
+
+def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode, filename, skip_existing=False):
     """后台处理PDF"""
     start_time = time.time()
     
@@ -179,35 +237,86 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         log_to_state(hash_id, "开始从PDF提取页面...")
         processing_state[hash_id].update({
             'extract_progress': 10,
-            'extract_status': 'Loading PDF...'
+            'extract_status': 'Loading PDF info...'
         })
         
-        images = load_images_from_pdf(str(pdf_path), dpi=150)
-        total_pages = len(images)
+        # Get page count
+        with fitz.open(pdf_path) as doc:
+            total_pages = doc.page_count
         
         log_to_state(hash_id, f"PDF加载成功，共 {total_pages} 页")
-        processing_state[hash_id].update({
-            'extract_progress': 50,
-            'extract_status': f'Loaded {total_pages} pages'
-        })
         
         # 根据模式决定处理哪些页面
         if process_mode == 'single':
-            images_to_process = [images[0]]
             page_indices = [0]
             log_to_state(hash_id, "处理模式: 仅处理第1页")
         else:
-            images_to_process = images
             page_indices = list(range(total_pages))
             log_to_state(hash_id, f"处理模式: 处理全部 {total_pages} 页")
+            
+        processing_state[hash_id].update({
+            'extract_progress': 20,
+            'extract_status': f'Extracting {len(page_indices)} pages...'
+        })
         
+        # Check if images already exist
+        images_exist = False
+        image_paths = []
+        
+        if skip_existing:
+            # Check if all expected images exist
+            all_exist = True
+            temp_paths = []
+            for idx in page_indices:
+                img_path = work_dir / f"page_{idx:04d}.jpg"
+                if not img_path.exists():
+                    all_exist = False
+                    break
+                temp_paths.append(str(img_path))
+            
+            if all_exist:
+                images_exist = True
+                image_paths = temp_paths
+                log_to_state(hash_id, "图片已存在，跳过拆图步骤")
+        
+        if not images_exist:
+            # Parallel extraction
+            extract_args = [
+                (str(pdf_path), idx, 150, str(work_dir))
+                for idx in page_indices
+            ]
+            
+            image_paths = []
+            with Pool() as pool:
+                for i, img_path in enumerate(pool.imap(extract_page_image, extract_args)):
+                    image_paths.append(img_path)
+                    progress = 20 + (i + 1) / len(extract_args) * 80
+                    processing_state[hash_id].update({
+                        'extract_progress': progress,
+                        'extract_status': f'Extracted {i+1}/{len(extract_args)}'
+                    })
+        
+        # Filter out failed extractions
+        valid_pages = []
+        for img_path, page_idx in zip(image_paths, page_indices):
+             if img_path:
+                valid_pages.append((img_path, page_idx))
+        
+        if not valid_pages:
+            raise Exception("No images extracted from PDF")
+
+        # Create images zip if not exists
+        if not (work_dir / f"{base_name}_{hash_id}_images.zip").exists():
+            log_to_state(hash_id, "创建图片ZIP包...")
+            create_images_zip(work_dir, base_name, hash_id, [p[0] for p in valid_pages])
+
         processing_state[hash_id].update({
             'extract_progress': 100,
             'extract_status': 'Complete'
         })
         
         # 2. OCR处理阶段
-        log_to_state(hash_id, f"开始OCR处理 {len(images_to_process)} 页...")
+        log_to_state(hash_id, f"开始OCR处理 {len(valid_pages)} 页...")
         processing_state[hash_id].update({
             'ocr_progress': 0,
             'ocr_status': 'Starting OCR...'
@@ -215,20 +324,24 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         
         # 多进程处理
         args_list = [
-            (img, str(work_dir), base_name, idx, hash_id)
-            for img, idx in zip(images_to_process, page_indices)
+            (img_path, str(work_dir), base_name, idx, hash_id, skip_existing)
+            for img_path, idx in valid_pages
         ]
         
         results = []
         with Pool() as pool:
             for i, result in enumerate(pool.imap(process_single_page, args_list)):
-                results.append(result)
+                if result:
+                    results.append(result)
                 progress = (i + 1) / len(args_list) * 100
                 processing_state[hash_id].update({
                     'ocr_progress': progress,
                     'ocr_status': f'Page {i+1}/{len(args_list)}'
                 })
-                log_to_state(hash_id, f"完成OCR处理: 第 {i+1}/{len(args_list)} 页")
+                if not skip_existing or (skip_existing and "already processed" not in processing_state[hash_id].get('log', '')):
+                     # Only log if actually processing or if it's the first skip message (to avoid spamming log)
+                     # Actually, process_single_page logs too.
+                     pass
         
         processing_state[hash_id].update({
             'ocr_progress': 100,
@@ -245,16 +358,46 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         all_cells = []
         all_md_parts = []
         
-        for result in sorted(results, key=lambda x: x['page_no']):
-            # 读取JSON
-            with open(result['layout_info_path'], 'r', encoding='utf-8') as f:
-                cells = json.load(f)
-                all_cells.append({'page': result['page_no'], 'cells': cells})
+        # Filter results to ensure they are valid dictionaries
+        valid_results = [r for r in results if isinstance(r, dict) and 'page_no' in r]
+        
+        # Create a map of page_no to result for easy lookup
+        result_map = {r['page_no']: r for r in valid_results}
+        
+        # Iterate through ALL pages, not just the ones in results
+        # This ensures we generate a complete document even if some pages failed completely
+        for page_idx in range(total_pages):
+            result = result_map.get(page_idx)
             
-            # 读取MD
-            with open(result['md_content_path'], 'r', encoding='utf-8') as f:
-                md_content = f.read()
-                all_md_parts.append(f"# Page {result['page_no'] + 1}\n\n{md_content}")
+            # Try to load JSON
+            json_loaded = False
+            if result and 'layout_info_path' in result and result['layout_info_path'] and os.path.exists(result['layout_info_path']):
+                try:
+                    with open(result['layout_info_path'], 'r', encoding='utf-8') as f:
+                        cells = json.load(f)
+                        all_cells.append({'page': page_idx, 'cells': cells})
+                        json_loaded = True
+                except Exception as e:
+                    log_to_state(hash_id, f"Warning: Failed to load JSON for page {page_idx}: {e}")
+            
+            if not json_loaded:
+                # Add empty cells for failed/missing pages
+                all_cells.append({'page': page_idx, 'cells': []})
+
+            # Try to load Markdown
+            md_loaded = False
+            if result and 'md_content_path' in result and result['md_content_path'] and os.path.exists(result['md_content_path']):
+                try:
+                    with open(result['md_content_path'], 'r', encoding='utf-8') as f:
+                        md_content = f.read()
+                        all_md_parts.append(f"# Page {page_idx + 1}\n\n{md_content}")
+                        md_loaded = True
+                except Exception as e:
+                    log_to_state(hash_id, f"Warning: Failed to load Markdown for page {page_idx}: {e}")
+            
+            if not md_loaded:
+                # Fallback for missing markdown
+                all_md_parts.append(f"# Page {page_idx + 1}\n\n[Content missing or processing failed]")
         
         processing_state[hash_id].update({
             'generate_progress': 40,
@@ -379,6 +522,11 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                         
                         if file_type == 'zip':
                             zip_path = item / f"{base_name}_{hash_id}.zip"
+                            if zip_path.exists():
+                                self.send_file(zip_path, 'application/zip')
+                                return
+                        elif file_type == 'images_zip':
+                            zip_path = item / f"{base_name}_{hash_id}_images.zip"
                             if zip_path.exists():
                                 self.send_file(zip_path, 'application/zip')
                                 return
@@ -513,6 +661,15 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             print(f"Error sending file: {traceback.format_exc()}")
             self.send_error(500, f"Error sending file: {str(e)}")
+
+    def send_json_error(self, code, message):
+        """发送JSON格式的错误响应"""
+        response = json.dumps({'error': message}).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Content-Length', str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
     
     def do_POST(self):
         try:
@@ -617,7 +774,73 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(response_data)
                 return
             
-            self.send_error(404, "Not found")
+            elif self.path == '/reprocess':
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+                
+                hash_id = data.get('hash_id')
+                process_mode = data.get('process_mode', 'all')
+                
+                if not hash_id:
+                    self.send_json_error(400, "Missing hash_id")
+                    return
+                
+                # Find directory
+                work_dir = None
+                base_name = None
+                for item in DATA_DIR.iterdir():
+                    if item.is_dir() and hash_id in item.name:
+                        work_dir = item
+                        base_name = item.name.replace(f"_{hash_id}", "")
+                        break
+                
+                if not work_dir:
+                    self.send_json_error(404, "Task not found")
+                    return
+                
+                # Find PDF
+                pdf_path = None
+                for item in work_dir.iterdir():
+                    if item.suffix.lower() == '.pdf':
+                        pdf_path = item
+                        break
+                
+                if not pdf_path:
+                    self.send_json_error(404, "PDF file not found")
+                    return
+                
+                # Reset state
+                processing_state[hash_id] = {
+                    'extract_progress': 0,
+                    'extract_status': 'Restarting...',
+                    'ocr_progress': 0,
+                    'ocr_status': 'Waiting...',
+                    'generate_progress': 0,
+                    'generate_status': 'Waiting...',
+                    'complete': False,
+                    'log': 'Reprocessing started'
+                }
+                
+                # Start background process with skip_existing=True
+                thread = threading.Thread(
+                    target=process_pdf_background,
+                    args=(pdf_path, work_dir, base_name, hash_id, process_mode, pdf_path.name, True)
+                )
+                thread.daemon = True
+                thread.start()
+                
+                response = {'hash_id': hash_id, 'status': 'started'}
+                response_data = json.dumps(response).encode('utf-8')
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Content-Length', str(len(response_data)))
+                self.end_headers()
+                self.wfile.write(response_data)
+                return
+            
+            self.send_json_error(404, "Not found")
         
         except Exception as e:
             print(f"Error in do_POST: {traceback.format_exc()}")

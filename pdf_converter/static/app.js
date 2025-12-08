@@ -261,6 +261,8 @@ async function loadExistingFiles() {
                     </div>
                     <button onclick="downloadExisting('${file.hash_id}', 'zip')">📦 ZIP</button>
                     <button class="secondary" onclick="downloadExisting('${file.hash_id}', 'docx')">📄 DOCX</button>
+                    <button class="secondary" onclick="downloadExisting('${file.hash_id}', 'images_zip')">🖼️ Images</button>
+                    <button class="warning" onclick="reprocessFile('${file.hash_id}')" style="background-color: #ff9800;">🔄 Reprocess</button>
                 `;
                 fileList.appendChild(item);
             });
@@ -273,6 +275,52 @@ async function loadExistingFiles() {
 // 下载已存在的文件
 function downloadExisting(hashId, type) {
     window.open(`/download/${hashId}/${type}`, '_blank');
+}
+
+// 重新处理文件
+async function reprocessFile(hashId) {
+    if (!confirm('确定要重新处理此文件吗？这将尝试恢复未完成的步骤。')) {
+        return;
+    }
+    
+    try {
+        // 隐藏列表，显示进度
+        document.getElementById('existingFiles').style.display = 'none';
+        progressSection.style.display = 'block';
+        resultSection.style.display = 'none';
+        
+        // 重置进度UI
+        updateProgress('extract', 0, 'Starting...');
+        updateProgress('ocr', 0, 'Waiting...');
+        updateProgress('generate', 0, 'Waiting...');
+        logger.clear();
+        logger.info(`开始重新处理任务: ${hashId}`);
+        
+        const response = await fetch('/reprocess', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                hash_id: hashId,
+                process_mode: 'all'
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            currentHashId = hashId;
+            await pollProgress(hashId);
+        } else {
+            throw new Error(data.message || 'Request failed');
+        }
+        
+    } catch (e) {
+        logger.error(`重新处理失败: ${e.message}`);
+        alert('重新处理失败: ' + e.message);
+        loadExistingFiles(); // 恢复显示列表
+    }
 }
 
 // 页面加载时获取文件列表
