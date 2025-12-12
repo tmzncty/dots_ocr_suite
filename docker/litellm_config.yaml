@@ -1,0 +1,17 @@
+model_list:
+  - model_name: dots-ocr
+    litellm_params:
+      model: openai/dots-ocr
+      # 使用 docker 内部网络名 + 内部端口 8000
+      api_base: http://ocr-service-gpu0:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: dots-ocr
+    litellm_params:
+      model: openai/dots-ocr
+      # 使用 docker 内部网络名 + 内部端口 8000
+      api_base: http://ocr-service-gpu1:8002/v1
+      api_key: "EMPTY"
+
+router_settings:
+  routing_strategy: simple-shuffle
