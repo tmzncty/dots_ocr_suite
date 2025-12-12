@@ -82,10 +82,16 @@
 如果你有自己的 OCR 服务器，或者后端地址发生了变化，请修改 `dots_ocr_lib.py` 文件中的配置，或者在 `server.py` 中修改 `DotsOCRParser` 的初始化参数。
 
 ## 📝 版本信息
-*   **当前版本**: v1.2
-*   **更新日期**: 2025-12-09
+*   **当前版本**: v1.3
+*   **更新日期**: 2025-12-13
 
 ## 📅 更新日志 (Changelog)
+### v1.3（2025年12月13日 00:25:31）
+感谢qingkong9579提供的PR，我们在两张3090上测试成功。主要是为了~~打原神~~~所以才用windows26H1。这样的话两张卡可以运行两个VLLM然后完美调度。
+<img width="1926" height="300" alt="image" src="https://github.com/user-attachments/assets/75451fee-47f2-445c-a1de-510f1014a7a2" />
+
+<img width="1310" height="823" alt="1ffae81d64cc8cd68204829d3ed3aa4" src="https://github.com/user-attachments/assets/7a111aa8-24fc-4eb7-be7b-7205ec9d8548" />
+
 
 ### v1.2 (2025-12-09)
 本次更新重点增强了**稳定性**、**可观测性**以及**数据导出**的多样性。
@@ -104,12 +110,6 @@
     *   支持日志自动轮转（防止文件过大），记录详细的业务操作（上传、下载、处理状态）和异常堆栈，同时屏蔽了冗余的底层库日志，方便排查问题。
 *   **⚡ 异步进度更新**：
     *   优化了多进程处理逻辑，采用异步无序返回 (`imap_unordered`)，只要有页面处理完成即刻更新进度条，视觉反馈更加流畅。
-### v1.2（2025年12月13日 00:25:31）
-感谢qingkong9579提供的PR，我们在两张3090上测试成功。主要是为了~~打原神~~~所以才用windows26H1。这样的话两张卡可以运行两个VLLM然后完美调度。
-<img width="1926" height="300" alt="image" src="https://github.com/user-attachments/assets/75451fee-47f2-445c-a1de-510f1014a7a2" />
-
-<img width="1310" height="823" alt="1ffae81d64cc8cd68204829d3ed3aa4" src="https://github.com/user-attachments/assets/7a111aa8-24fc-4eb7-be7b-7205ec9d8548" />
-
 
 ### v1.1 (2025-12-08)
 本次更新主要集中在**大文件处理能力**、**容错性**以及**用户体验**的提升。
