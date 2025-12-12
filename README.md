@@ -87,7 +87,7 @@
 
 ## 📅 更新日志 (Changelog)
 ### v1.3（2025年12月13日 00:25:31）
-感谢qingkong9579提供的PR，我们在两张3090上测试成功。主要是为了~~打原神~~~所以才用windows26H1。这样的话两张卡可以运行两个VLLM然后完美调度。
+感谢qingkong9579提供的PR，我们在两张3090上测试成功。主要是为了~~打原神~~所以才用windows26H1。这样的话两张卡可以运行两个VLLM然后完美调度。
 <img width="1926" height="300" alt="image" src="https://github.com/user-attachments/assets/75451fee-47f2-445c-a1de-510f1014a7a2" />
 
 <img width="1310" height="823" alt="1ffae81d64cc8cd68204829d3ed3aa4" src="https://github.com/user-attachments/assets/7a111aa8-24fc-4eb7-be7b-7205ec9d8548" />
