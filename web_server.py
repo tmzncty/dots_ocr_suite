@@ -19,7 +19,7 @@ DATA_DIR.mkdir(exist_ok=True)
 # 初始化 Parser
 parser = DotsOCRParser(
     ip="192.168.24.78",
-    port=8000,
+    port=4000,
     dpi=200,
     min_pixels=3136,
     max_pixels=11289600

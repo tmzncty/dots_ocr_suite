@@ -205,8 +205,8 @@ def layoutjson2md(image, cells, text_key='text', no_page_hf=False):
 
 import time
 
-def inference_with_vllm(image, prompt, ip="localhost", port=8000, temperature=0.1, top_p=0.9, max_completion_tokens=32768, model_name='model', timeout=600.0, max_retries=3):
-    client = OpenAI(api_key=os.environ.get("API_KEY", "0"), base_url=f"http://{ip}:{port}/v1")
+def inference_with_vllm(image, prompt, ip="localhost", port=8000, temperature=0.1, top_p=0.9, max_completion_tokens=32768, model_name='dots-ocr', timeout=600.0, max_retries=3):
+    client = OpenAI(api_key="EMPTY", base_url=f"http://{ip}:{port}/v1")
     messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": PILimage_to_base64(image)}}, {"type": "text", "text": f"<|img|><|imgpad|><|endofimg|>{prompt}"}]}]
     
     for attempt in range(max_retries):
@@ -225,7 +225,7 @@ def inference_with_vllm(image, prompt, ip="localhost", port=8000, temperature=0.
 # ==============================================================================
 
 class DotsOCRParser:
-    def __init__(self, ip='localhost', port=8000, model_name='model', temperature=0.1, top_p=1.0, max_completion_tokens=16384, num_thread=64, dpi=200, output_dir="./output", min_pixels=None, max_pixels=None, timeout=600.0):
+    def __init__(self, ip='localhost', port=8000, model_name='dots-ocr', temperature=0.1, top_p=1.0, max_completion_tokens=16384, num_thread=64, dpi=200, output_dir="./output", min_pixels=None, max_pixels=None, timeout=600.0):
         self.ip, self.port, self.model_name = ip, port, model_name
         self.temperature, self.top_p, self.max_completion_tokens = temperature, top_p, max_completion_tokens
         self.num_thread, self.dpi, self.output_dir = num_thread, dpi, output_dir

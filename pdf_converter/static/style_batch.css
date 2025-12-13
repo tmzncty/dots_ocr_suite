@@ -1,0 +1,80 @@
+
+/* Batch Processing Styles */
+.batch-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: center;
+}
+
+.file-list-section {
+    background: var(--panel-bg);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    margin-bottom: 30px;
+}
+
+.file-list-header {
+    display: flex;
+    padding: 10px;
+    background: #f8f9fa;
+    border-bottom: 2px solid var(--border);
+    font-weight: bold;
+    color: #555;
+}
+
+.file-item {
+    display: flex;
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    transition: background 0.2s;
+}
+
+.file-item:hover {
+    background: #f9f9f9;
+}
+
+.file-item.selected {
+    background: #e3f2fd;
+}
+
+.col-select { width: 40px; text-align: center; }
+.col-name { flex: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 10px; }
+.col-status { flex: 1; min-width: 100px; }
+.col-progress { flex: 1; min-width: 100px; }
+.col-action { width: 100px; text-align: right; }
+
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.status-waiting { background: #eee; color: #666; }
+.status-queued { background: #e3f2fd; color: #1976d2; }
+.status-processing { background: #fff3e0; color: #f57c00; }
+.status-complete { background: #e8f5e9; color: #2e7d32; }
+.status-error { background: #ffebee; color: #c62828; }
+
+.mini-progress {
+    height: 6px;
+    background: #eee;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 5px;
+}
+
+.mini-progress-bar {
+    height: 100%;
+    background: var(--primary);
+    width: 0%;
+    transition: width 0.3s;
+}
+
+button:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}

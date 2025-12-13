@@ -1,0 +1,68 @@
+services:
+  # === GPU 0 服务 ===
+  ocr-service-gpu0:
+    image: rednotehilab/dots.ocr:vllm-openai-v0.9.1
+    container_name: ocr-service-gpu0
+    shm_size: '16gb'
+    volumes:
+      - F:\dots.ocr\weights\DotsOCR:/workspace/weights/DotsOCR
+      - ./start_vllm.sh:/workspace/start_vllm.sh
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONPATH=/workspace/weights:$PYTHONPATH
+      # 强制指定物理卡可见性 (尝试在 Docker 层面修复隔离)
+      - NVIDIA_VISIBLE_DEVICES=0
+      # 移除 CUDA_VISIBLE_DEVICES，交给脚本处理
+      - VLLM_PORT=8001
+    entrypoint: /bin/bash
+    command: ["/workspace/start_vllm.sh", "0"] # 传入参数 0
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+  # === GPU 1 服务 ===
+  ocr-service-gpu1:
+    image: rednotehilab/dots.ocr:vllm-openai-v0.9.1
+    container_name: ocr-service-gpu1
+    shm_size: '16gb'
+    volumes:
+      - F:\dots.ocr\weights\DotsOCR:/workspace/weights/DotsOCR
+      - ./start_vllm.sh:/workspace/start_vllm.sh
+    ports:
+      - "8002:8002"
+    environment:
+      - PYTHONPATH=/workspace/weights:$PYTHONPATH
+      # 强制指定物理卡可见性
+      - NVIDIA_VISIBLE_DEVICES=1
+      # 移除 CUDA_VISIBLE_DEVICES，交给脚本处理
+      - VLLM_PORT=8002
+    entrypoint: /bin/bash
+    command: ["/workspace/start_vllm.sh", "1"] # 传入参数 1
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  # LiteLLM 和之前保持一致即可
+  litellm-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    command: --config /app/config.yaml --detailed_debug
+    depends_on:
+      - ocr-service-gpu0
+      - ocr-service-gpu1
+    restart: unless-stopped

@@ -22,6 +22,9 @@ import threading
 import sys
 import fitz  # PyMuPDF
 from PIL import Image
+import queue
+import shutil
+import math
 
 # 添加父目录到路径以导入库
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -46,6 +49,13 @@ DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+# Concurrency Settings
+MAX_CONCURRENT_IMAGES = 4  # Number of images processed in parallel per PDF
+MAX_CONCURRENT_PDFS = 1    # Number of PDFs processed in parallel (Sequential = 1)
+
+# Task Queue for sequential processing
+task_queue = queue.Queue()
+
 # 配置日志
 log_file = LOG_DIR / "server.log"
 logging.basicConfig(
@@ -67,7 +77,7 @@ logger = logging.getLogger(__name__)
 # 初始化 Parser
 parser = DotsOCRParser(
     ip="192.168.24.78",
-    port=8000,
+    port=4000,
     dpi=150,
     min_pixels=3136,
     max_pixels=11289600,
@@ -152,73 +162,106 @@ def process_single_page(args):
     
     return result
 
-def markdown_to_docx(md_content, output_path):
-    """将Markdown转换为DOCX"""
-    doc = Document()
+def markdown_to_docx(md_parts, output_base_path, split_every=300):
+    """
+    将Markdown转换为DOCX，支持分页切割
+    md_parts: list of markdown strings (one per page)
+    output_base_path: base path for output (e.g., "file.docx")
+    split_every: split into new file every N pages
+    """
+    total_pages = len(md_parts)
+    num_files = math.ceil(total_pages / split_every)
     
-    # 设置默认字体
-    style = doc.styles['Normal']
-    font = style.font
-    font.name = 'Arial'
-    font.size = Pt(11)
+    generated_files = []
     
-    lines = md_content.split('\n')
-    i = 0
-    
-    while i < len(lines):
-        line = lines[i].strip()
+    for file_idx in range(num_files):
+        start_idx = file_idx * split_every
+        end_idx = min((file_idx + 1) * split_every, total_pages)
         
-        if not line:
-            i += 1
-            continue
+        current_parts = md_parts[start_idx:end_idx]
         
-        # 标题
-        if line.startswith('#'):
-            level = len(line) - len(line.lstrip('#'))
-            text = line.lstrip('#').strip()
-            doc.add_heading(text, level=min(level, 9))
+        doc = Document()
         
-        # 图片
-        elif line.startswith('![') and '](data:image/' in line:
-            try:
-                match = re.search(r'!\[.*?\]\((data:image/[^;]+;base64,[^)]+)\)', line)
-                if match:
-                    data_url = match.group(1)
-                    header, encoded = data_url.split(',', 1)
-                    image_data = base64.b64decode(encoded)
-                    
-                    image_stream = io.BytesIO(image_data)
-                    try:
-                        from docx.shared import Inches
-                        doc.add_picture(image_stream, width=Inches(5))
-                    except:
-                        doc.add_paragraph('[Image]')
-            except Exception as e:
-                doc.add_paragraph(f'[Image - Error: {str(e)}]')
+        # 设置默认字体
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Arial'
+        font.size = Pt(11)
         
-        # LaTeX公式
-        elif line.startswith('$$'):
-            formula_lines = [line]
-            i += 1
-            while i < len(lines) and not lines[i].strip().endswith('$$'):
-                formula_lines.append(lines[i])
+        # Combine parts for this file
+        combined_content = '\n\n'.join(current_parts)
+        
+        lines = combined_content.split('\n')
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            if not line:
                 i += 1
-            if i < len(lines):
-                formula_lines.append(lines[i])
-            formula_text = '\n'.join(formula_lines)
-            p = doc.add_paragraph(formula_text)
-            p.style = 'Intense Quote'
+                continue
+            
+            # 标题
+            if line.startswith('#'):
+                level = len(line) - len(line.lstrip('#'))
+                text = line.lstrip('#').strip()
+                try:
+                    doc.add_heading(text, level=min(level, 9))
+                except:
+                    doc.add_paragraph(text)
+            
+            # 图片
+            elif line.startswith('![') and '](data:image/' in line:
+                try:
+                    match = re.search(r'!\[.*?\]\((data:image/[^;]+;base64,[^)]+)\)', line)
+                    if match:
+                        data_url = match.group(1)
+                        header, encoded = data_url.split(',', 1)
+                        image_data = base64.b64decode(encoded)
+                        
+                        image_stream = io.BytesIO(image_data)
+                        try:
+                            from docx.shared import Inches
+                            doc.add_picture(image_stream, width=Inches(5))
+                        except:
+                            doc.add_paragraph('[Image]')
+                except Exception as e:
+                    doc.add_paragraph(f'[Image - Error: {str(e)}]')
+            
+            # LaTeX公式
+            elif line.startswith('$$'):
+                formula_lines = [line]
+                i += 1
+                while i < len(lines) and not lines[i].strip().endswith('$$'):
+                    formula_lines.append(lines[i])
+                    i += 1
+                if i < len(lines):
+                    formula_lines.append(lines[i])
+                formula_text = '\n'.join(formula_lines)
+                p = doc.add_paragraph(formula_text)
+                p.style = 'Intense Quote'
+            
+            # 普通段落
+            else:
+                text = line
+                text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+                text = re.sub(r'\*(.+?)\*', r'\1', text)
+                doc.add_paragraph(text)
+            
+            i += 1
         
-        # 普通段落
+        # Determine output filename
+        if num_files > 1:
+            # Insert part number before extension
+            p = Path(output_base_path)
+            out_path = p.parent / f"{p.stem}_part{file_idx+1}{p.suffix}"
         else:
-            text = line
-            text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-            text = re.sub(r'\*(.+?)\*', r'\1', text)
-            doc.add_paragraph(text)
+            out_path = output_base_path
+            
+        doc.save(str(out_path))
+        generated_files.append(str(out_path))
         
-        i += 1
-    
-    doc.save(output_path)
+    return generated_files
 
 def create_txt_file(md_content, output_path):
     """将Markdown内容保存为TXT文件"""
@@ -240,9 +283,9 @@ def create_zip_package(base_dir, base_name, hash_id):
     zip_path = base_dir / zip_name
     
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        docx_file = base_dir / f"{base_name}_{hash_id}.docx"
-        if docx_file.exists():
-            zipf.write(docx_file, f"{base_name}_{hash_id}.docx")
+        # Add all DOCX files (including parts)
+        for item in base_dir.glob(f"{base_name}_{hash_id}*.docx"):
+            zipf.write(item, item.name)
         
         md_file = base_dir / f"{base_name}_{hash_id}_combined.md"
         if md_file.exists():
@@ -374,8 +417,8 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         ocr_start_time = time.time()
         total_tasks = len(args_list)
         
-        # 限制并发数为 4，防止请求过多导致超时
-        with Pool(processes=4) as pool:
+        # 限制并发数为 MAX_CONCURRENT_IMAGES，防止请求过多导致超时
+        with Pool(processes=MAX_CONCURRENT_IMAGES) as pool:
             # 使用 imap_unordered 以便更快更新进度
             for i, result in enumerate(pool.imap_unordered(process_single_page, args_list)):
                 if result:
@@ -501,9 +544,9 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
             'generate_status': 'Creating DOCX...'
         })
         
-        # 生成DOCX
+        # 生成DOCX (Pass list of parts for splitting)
         docx_path = work_dir / f"{base_name}_{hash_id}.docx"
-        markdown_to_docx(combined_md, str(docx_path))
+        markdown_to_docx(all_md_parts, str(docx_path), split_every=300)
         
         log_to_state(hash_id, "DOCX文档已生成")
         
@@ -541,6 +584,35 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         })
         logger.error(f"Processing error: {traceback.format_exc()}")
 
+def worker():
+    """Background worker to process PDFs sequentially"""
+    logger.info("Worker thread started, waiting for tasks...")
+    while True:
+        try:
+            task = task_queue.get()
+            if task is None:
+                break
+            
+            func, args, hash_id = task
+            
+            # Update state to processing
+            if hash_id in processing_state:
+                processing_state[hash_id]['status'] = 'Processing'
+                log_to_state(hash_id, "Starting processing...")
+            
+            try:
+                func(*args)
+            except Exception as e:
+                logger.error(f"Error in worker for {hash_id}: {e}")
+                if hash_id in processing_state:
+                    processing_state[hash_id]['error'] = str(e)
+                    processing_state[hash_id]['complete'] = True
+            finally:
+                task_queue.task_done()
+                
+        except Exception as e:
+            logger.error(f"Worker loop error: {e}")
+
 # ==============================================================================
 # Server Handler
 # ==============================================================================
@@ -563,6 +635,33 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             # API端点
+            if self.path == '/info':
+                info = {
+                    'max_concurrent_images': MAX_CONCURRENT_IMAGES,
+                    'max_concurrent_pdfs': MAX_CONCURRENT_PDFS,
+                    'queue_size': task_queue.qsize()
+                }
+                response_data = json.dumps(info).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Content-Length', str(len(response_data)))
+                self.end_headers()
+                self.wfile.write(response_data)
+                return
+
+            if self.path == '/settings':
+                settings = {
+                    'max_concurrent_images': MAX_CONCURRENT_IMAGES,
+                    'max_concurrent_pdfs': MAX_CONCURRENT_PDFS
+                }
+                response_data = json.dumps(settings).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Content-Length', str(len(response_data)))
+                self.end_headers()
+                self.wfile.write(response_data)
+                return
+
             if self.path.startswith('/progress/'):
                 hash_id = self.path.split('/')[-1]
                 state = processing_state.get(hash_id, {
@@ -637,11 +736,15 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                                 except:
                                     pass
                             
-                            files.append({
-                                'name': base_name,
-                                'hash_id': hash_id,
-                                'pages': pages
-                            })
+                            # Check if complete (zip exists)
+                            zip_path = item / f"{base_name}_{hash_id}.zip"
+                            if zip_path.exists():
+                                files.append({
+                                    'name': base_name,
+                                    'hash_id': hash_id,
+                                    'pages': pages,
+                                    'status': 'complete'
+                                })
                 
                 response_data = json.dumps({'files': files}).encode('utf-8')
                 self.send_response(200)
@@ -649,6 +752,15 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(response_data)))
                 self.end_headers()
                 self.wfile.write(response_data)
+                return
+
+            elif self.path.startswith('/font/'):
+                font_name = self.path.split('/')[-1]
+                font_path = BASE_DIR / "font" / font_name
+                if font_path.exists():
+                    self.send_file(font_path, 'font/ttf')
+                else:
+                    self.send_error(404, "Font not found")
                 return
             
             # 静态文件处理
@@ -821,26 +933,65 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 # 初始化处理状态
                 processing_state[hash_id] = {
                     'extract_progress': 0,
-                    'extract_status': 'Starting...',
+                    'extract_status': 'Queued',
                     'ocr_progress': 0,
                     'ocr_status': 'Waiting...',
                     'generate_progress': 0,
                     'generate_status': 'Waiting...',
                     'complete': False,
-                    'log': 'Initialized'
+                    'log': 'Added to queue',
+                    'status': 'Queued'
                 }
                 
-                # 启动后台处理
-                logger.info(f"Starting background processing for {filename} ({hash_id})")
-                thread = threading.Thread(
-                    target=process_pdf_background,
-                    args=(pdf_path, work_dir, base_name, hash_id, process_mode, filename)
-                )
-                thread.daemon = True
-                thread.start()
+                # Add to queue instead of starting thread directly
+                logger.info(f"Queueing task for {filename} ({hash_id})")
+                task_queue.put((
+                    process_pdf_background,
+                    (pdf_path, work_dir, base_name, hash_id, process_mode, filename),
+                    hash_id
+                ))
                 
-                response = {'hash_id': hash_id, 'already_exists': False}
+                response = {'hash_id': hash_id, 'already_exists': False, 'status': 'queued'}
                 response_data = json.dumps(response).encode('utf-8')
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Content-Length', str(len(response_data)))
+                self.end_headers()
+                self.wfile.write(response_data)
+                return
+
+            elif self.path == '/settings':
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                settings = json.loads(post_data.decode('utf-8'))
+                
+                global MAX_CONCURRENT_IMAGES
+                global MAX_CONCURRENT_PDFS
+                
+                if 'max_concurrent_images' in settings:
+                    try:
+                        val = int(settings['max_concurrent_images'])
+                        if val > 0:
+                            MAX_CONCURRENT_IMAGES = val
+                            logger.info(f"Updated MAX_CONCURRENT_IMAGES to {val}")
+                    except ValueError:
+                        pass
+                        
+                if 'max_concurrent_pdfs' in settings:
+                    try:
+                        val = int(settings['max_concurrent_pdfs'])
+                        if val > 0:
+                            MAX_CONCURRENT_PDFS = val
+                            logger.info(f"Updated MAX_CONCURRENT_PDFS to {val}")
+                    except ValueError:
+                        pass
+                
+                response_data = json.dumps({
+                    'status': 'success',
+                    'max_concurrent_images': MAX_CONCURRENT_IMAGES,
+                    'max_concurrent_pdfs': MAX_CONCURRENT_PDFS
+                }).encode('utf-8')
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
@@ -890,24 +1041,24 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 # Reset state
                 processing_state[hash_id] = {
                     'extract_progress': 0,
-                    'extract_status': 'Restarting...',
+                    'extract_status': 'Queued (Reprocess)',
                     'ocr_progress': 0,
                     'ocr_status': 'Waiting...',
                     'generate_progress': 0,
                     'generate_status': 'Waiting...',
                     'complete': False,
-                    'log': 'Reprocessing started'
+                    'log': 'Reprocessing queued',
+                    'status': 'Queued'
                 }
                 
-                # Start background process with skip_existing=True
-                thread = threading.Thread(
-                    target=process_pdf_background,
-                    args=(pdf_path, work_dir, base_name, hash_id, process_mode, pdf_path.name, True)
-                )
-                thread.daemon = True
-                thread.start()
+                # Add to queue
+                task_queue.put((
+                    process_pdf_background,
+                    (pdf_path, work_dir, base_name, hash_id, process_mode, pdf_path.name, True),
+                    hash_id
+                ))
                 
-                response = {'hash_id': hash_id, 'status': 'started'}
+                response = {'hash_id': hash_id, 'status': 'queued'}
                 response_data = json.dumps(response).encode('utf-8')
                 
                 self.send_response(200)
@@ -915,6 +1066,46 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(response_data)))
                 self.end_headers()
                 self.wfile.write(response_data)
+                return
+            
+            elif self.path == '/download_batch':
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+                
+                hash_ids = data.get('hash_ids', [])
+                if not hash_ids:
+                    self.send_json_error(400, "No files selected")
+                    return
+                
+                # Create a temporary zip file containing all requested files
+                timestamp = int(time.time())
+                batch_zip_name = f"batch_download_{timestamp}.zip"
+                batch_zip_path = DATA_DIR / batch_zip_name
+                
+                with zipfile.ZipFile(batch_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for hash_id in hash_ids:
+                        # Find the file directory
+                        found = False
+                        for item in DATA_DIR.iterdir():
+                            if item.is_dir() and hash_id in item.name:
+                                base_name = item.name.replace(f"_{hash_id}", "")
+                                docx_path = item / f"{base_name}_{hash_id}.docx"
+                                if docx_path.exists():
+                                    zipf.write(docx_path, f"{base_name}.docx")
+                                    found = True
+                                break
+                        if not found:
+                            logger.warning(f"File not found for batch download: {hash_id}")
+                
+                self.send_file(batch_zip_path, 'application/zip')
+                # Clean up after sending? Ideally yes, but send_file is synchronous here so we can delete after.
+                # But send_file returns, so we can delete after calling it?
+                # send_file writes to wfile.
+                try:
+                    os.remove(batch_zip_path)
+                except:
+                    pass
                 return
             
             self.send_json_error(404, "Not found")
@@ -944,6 +1135,9 @@ def run(port=PORT):
         server_class = ThreadingHTTPServer
         
     httpd = server_class(server_address, PDFConverterHandler)
+    
+    # Start the worker thread
+    threading.Thread(target=worker, daemon=True).start()
     
     print("=" * 60)
     print(f"PDF to DOCX Converter Server")
