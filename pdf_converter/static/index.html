@@ -14,8 +14,8 @@
             <div class="subtitle">由 Dots OCR 提供支援 - 使用 AI 將 PDF 文件轉換為可編輯的 DOCX</div>
             
             <div class="settings-panel" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; display: inline-block;">
-                <label for="concurrencyInput">並發圖片數 (1-16): </label>
-                <input type="number" id="concurrencyInput" min="1" max="16" value="4" style="width: 60px; padding: 4px;">
+                <label for="concurrencyInput">並發圖片數 (1-32): </label>
+                <input type="number" id="concurrencyInput" min="1" max="32" value="32" style="width: 60px; padding: 4px;">
                 <button id="saveSettingsBtn" class="small secondary">儲存設定</button>
             </div>
         </header>
@@ -49,7 +49,10 @@
         </div>
         
         <div class="file-list-section" id="fileListSection" style="display: none;">
-            <h3>文件隊列 / 歷史記錄</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h3 style="margin: 0;">文件隊列 / 歷史記錄</h3>
+                <button class="small secondary" onclick="loadHistory()">🔄 刷新列表</button>
+            </div>
             <div class="file-list-header">
                 <div class="col-select"><input type="checkbox" id="selectAll"></div>
                 <div class="col-name">檔名</div>
@@ -62,7 +65,10 @@
         
         <div class="progress-section" id="progressSection" style="display: none;">
             <!-- Detailed progress for selected file -->
-            <h3 id="detailTitle">處理詳情</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3 id="detailTitle">處理詳情</h3>
+                <div id="detailActions"></div>
+            </div>
             
             <!-- 拆图进度 -->
             <div class="progress-item">

@@ -57,6 +57,8 @@
 .status-queued { background: #e3f2fd; color: #1976d2; }
 .status-processing { background: #fff3e0; color: #f57c00; }
 .status-complete { background: #e8f5e9; color: #2e7d32; }
+.status-partial { background: #fff9c4; color: #f57f17; }
+.status-incomplete { background: #fce4ec; color: #c2185b; }
 .status-error { background: #ffebee; color: #c62828; }
 
 .mini-progress {

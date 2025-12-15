@@ -137,11 +137,12 @@ def get_image_by_fitz_doc(image, target_dpi=200):
 # --- From output_cleaner.py (Placeholder) ---
 class OutputCleaner:
     def clean_model_output(self, text):
+        if text is None: return ""
         try:
             start = min(text.find('{'), text.find('['))
             end = max(text.rfind('}'), text.rfind(']'))
             if start != -1 and end != -1: return json.loads(text[start:end+1])
-        except (json.JSONDecodeError, ValueError): pass
+        except (json.JSONDecodeError, ValueError, AttributeError): pass
         return text
 
 # --- From layout_utils.py ---
@@ -174,6 +175,7 @@ def post_process_cells(origin_image, cells, input_width, input_height, min_pixel
 
 def post_process_output(response, prompt_mode, origin_image, input_image, min_pixels=None, max_pixels=None):
     if prompt_mode not in ['prompt_layout_all_en', 'prompt_layout_only_en', 'prompt_grounding_ocr']: return response, False
+    if response is None: return "Error: Model returned None (Request failed)", True
     try:
         cells = json.loads(response)
         return post_process_cells(origin_image, cells, input_image.width, input_image.height, min_pixels, max_pixels), False

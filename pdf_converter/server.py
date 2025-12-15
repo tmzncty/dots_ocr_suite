@@ -50,7 +50,7 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 # Concurrency Settings
-MAX_CONCURRENT_IMAGES = 4  # Number of images processed in parallel per PDF
+MAX_CONCURRENT_IMAGES = 32  # Number of images processed in parallel per PDF
 MAX_CONCURRENT_PDFS = 1    # Number of PDFs processed in parallel (Sequential = 1)
 
 # Task Queue for sequential processing
@@ -91,11 +91,26 @@ processing_state = {}
 # Helper Functions
 # ==============================================================================
 
-def log_to_state(hash_id, message):
-    """添加日志到处理状态"""
+def log_to_state(hash_id, message, append=False, log_level='normal'):
+    """添加日志到处理状态
+    
+    Args:
+        hash_id: 任务ID
+        message: 日志消息
+        append: 是否追加到现有日志
+        log_level: 日志级别 ('important' 会显示在Web界面, 'normal' 仅记录到文件, 'silent' 只更新状态)
+    """
     if hash_id in processing_state:
-        processing_state[hash_id]['log'] = message
-        logger.info(f"[{hash_id}] {message}")
+        # 只有 important 级别的消息才添加到 Web UI 日志
+        if log_level == 'important':
+            if append and 'log' in processing_state[hash_id]:
+                processing_state[hash_id]['log'] = processing_state[hash_id]['log'] + '\n' + message
+            else:
+                processing_state[hash_id]['log'] = message
+        
+        # 所有级别都记录到文件日志（除了 silent）
+        if log_level != 'silent':
+            logger.info(f"[{hash_id}] {message}")
 
 def get_file_hash(file_data, length=8):
     """获取文件的SHA256哈希"""
@@ -130,37 +145,47 @@ def process_single_page(args):
     """处理单个页面（多进程）"""
     image_path, save_dir, save_name, page_idx, hash_id, skip_existing = args
     
+    # Check if stopped
+    if hash_id in processing_state and processing_state[hash_id].get('stopped', False):
+        return None
+    
     # Check if output exists
     json_path = Path(save_dir) / f"{save_name}_page_{page_idx}.json"
     md_path = Path(save_dir) / f"{save_name}_page_{page_idx}.md"
     
     if skip_existing and json_path.exists() and md_path.exists():
-        log_to_state(hash_id, f"Page {page_idx+1} already processed, skipping OCR.")
+        # 跳过已处理的页面，不记录日志
         return {
             'page_no': page_idx,
             'layout_info_path': str(json_path),
             'md_content_path': str(md_path)
         }
 
-    log_to_state(hash_id, f"正在处理第 {page_idx + 1} 页...")
+    # 不记录每页处理，只通过进度百分比显示
     
     # Load image from path
     try:
         origin_image = Image.open(image_path)
     except Exception as e:
-        log_to_state(hash_id, f"Error loading image {image_path}: {e}")
+        log_to_state(hash_id, f"Error loading image {image_path}: {e}", log_level='important')
         return None
 
-    result = parser._parse_single_image(
-        origin_image=origin_image,
-        prompt_mode='prompt_layout_all_en',
-        save_dir=str(save_dir),
-        save_name=save_name,
-        source='pdf',
-        page_idx=page_idx
-    )
-    
-    return result
+    try:
+        result = parser._parse_single_image(
+            origin_image=origin_image,
+            prompt_mode='prompt_layout_all_en',
+            save_dir=str(save_dir),
+            save_name=save_name,
+            source='pdf',
+            page_idx=page_idx
+        )
+        return result
+    except Exception as e:
+        log_to_state(hash_id, f"Error processing page {page_idx}: {e}", log_level='important')
+        # Return a dummy result so we can at least see it failed in the final doc if we want, 
+        # or just return None to count as failure.
+        # Returning None will make it show up in "failed_pages" list in process_pdf_background.
+        return None
 
 def markdown_to_docx(md_parts, output_base_path, split_every=300):
     """
@@ -319,7 +344,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
     
     try:
         # 1. 拆图阶段
-        log_to_state(hash_id, "开始从PDF提取页面...")
+        log_to_state(hash_id, "📄 开始提取 PDF 页面图片...", log_level='important')
         processing_state[hash_id].update({
             'extract_progress': 10,
             'extract_status': 'Loading PDF info...'
@@ -329,15 +354,15 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         with fitz.open(pdf_path) as doc:
             total_pages = doc.page_count
         
-        log_to_state(hash_id, f"PDF加载成功，共 {total_pages} 页")
+        log_to_state(hash_id, f"PDF加载成功，共 {total_pages} 页", log_level='normal')
         
         # 根据模式决定处理哪些页面
         if process_mode == 'single':
             page_indices = [0]
-            log_to_state(hash_id, "处理模式: 仅处理第1页")
+            log_to_state(hash_id, "处理模式: 仅处理第1页", log_level='important')
         else:
             page_indices = list(range(total_pages))
-            log_to_state(hash_id, f"处理模式: 处理全部 {total_pages} 页")
+            log_to_state(hash_id, f"处理模式: 处理全部 {total_pages} 页", log_level='important')
             
         processing_state[hash_id].update({
             'extract_progress': 20,
@@ -362,7 +387,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
             if all_exist:
                 images_exist = True
                 image_paths = temp_paths
-                log_to_state(hash_id, "图片已存在，跳过拆图步骤")
+                log_to_state(hash_id, "✅ 图片文件已存在，直接使用缓存", log_level='normal')
         
         if not images_exist:
             # Parallel extraction
@@ -392,7 +417,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
 
         # Create images zip if not exists
         if not (work_dir / f"{base_name}_{hash_id}_images.zip").exists():
-            log_to_state(hash_id, "创建图片ZIP包...")
+            log_to_state(hash_id, "创建图片ZIP包...", log_level='normal')
             create_images_zip(work_dir, base_name, hash_id, [p[0] for p in valid_pages])
 
         processing_state[hash_id].update({
@@ -401,7 +426,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         })
         
         # 2. OCR处理阶段
-        log_to_state(hash_id, f"开始OCR处理 {len(valid_pages)} 页...")
+        log_to_state(hash_id, f"🔍 开始 OCR 识别，共 {len(valid_pages)} 页（{MAX_CONCURRENT_IMAGES} 并发）", log_level='important')
         processing_state[hash_id].update({
             'ocr_progress': 0,
             'ocr_status': 'Starting OCR...'
@@ -416,13 +441,24 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         results = []
         ocr_start_time = time.time()
         total_tasks = len(args_list)
+        last_logged_milestone = 0
+        failed_pages = []
         
         # 限制并发数为 MAX_CONCURRENT_IMAGES，防止请求过多导致超时
         with Pool(processes=MAX_CONCURRENT_IMAGES) as pool:
             # 使用 imap_unordered 以便更快更新进度
             for i, result in enumerate(pool.imap_unordered(process_single_page, args_list)):
+                # Check if stopped
+                if processing_state[hash_id].get('stopped', False):
+                    pool.terminate()
+                    pool.join()
+                    raise Exception("Processing stopped by user")
+                
                 if result:
                     results.append(result)
+                else:
+                    # Track failed pages
+                    failed_pages.append(args_list[i][3])  # page_idx
                 
                 # 计算进度和速度
                 completed_count = i + 1
@@ -450,16 +486,30 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
                     'remaining_time': f"{remaining_time:.0f}s"
                 })
                 
-                if not skip_existing or (skip_existing and "already processed" not in processing_state[hash_id].get('log', '')):
-                     pass
+                # 只在50%里程碑记录一次重要日志，避免刷屏
+                current_milestone = int(progress / 50) * 50
+                if current_milestone > last_logged_milestone and current_milestone == 50:
+                    log_to_state(hash_id, f"📊 OCR 进度: {current_milestone}% ({completed_count}/{total_tasks} 页，速度: {speed:.2f} p/s)", log_level='important')
+                    last_logged_milestone = current_milestone
         
+        ocr_elapsed = time.time() - ocr_start_time
         processing_state[hash_id].update({
             'ocr_progress': 100,
             'ocr_status': 'Complete'
         })
         
+        # Log completion summary
+        success_count = len(results)
+        fail_count = len(failed_pages)
+        if fail_count > 0:
+            log_to_state(hash_id, f"✅ OCR 识别完成，耗时 {ocr_elapsed:.1f}秒\n成功: {success_count}/{total_tasks} 页，失败: {fail_count} 页", log_level='important')
+            if fail_count <= 10:
+                log_to_state(hash_id, f"失败页面: {', '.join(map(str, failed_pages))}", log_level='important')
+        else:
+            log_to_state(hash_id, f"✅ OCR 识别完成，耗时 {ocr_elapsed:.1f}秒，全部 {success_count} 页识别成功", log_level='important')
+        
         # 3. 生成文档阶段
-        log_to_state(hash_id, "开始合并结果并生成文档...")
+        log_to_state(hash_id, "📝 开始合并结果并生成文档...", log_level='important')
         processing_state[hash_id].update({
             'generate_progress': 10,
             'generate_status': 'Merging results...'
@@ -488,7 +538,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
                         all_cells.append({'page': page_idx, 'cells': cells})
                         json_loaded = True
                 except Exception as e:
-                    log_to_state(hash_id, f"Warning: Failed to load JSON for page {page_idx}: {e}")
+                    log_to_state(hash_id, f"Warning: Failed to load JSON for page {page_idx}: {e}", log_level='normal')
             
             if not json_loaded:
                 # Add empty cells for failed/missing pages
@@ -503,7 +553,7 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
                         all_md_parts.append(f"# Page {page_idx + 1}\n\n{md_content}")
                         md_loaded = True
                 except Exception as e:
-                    log_to_state(hash_id, f"Warning: Failed to load Markdown for page {page_idx}: {e}")
+                    log_to_state(hash_id, f"Warning: Failed to load Markdown for page {page_idx}: {e}", log_level='normal')
             
             if not md_loaded:
                 # Fallback for missing markdown
@@ -519,8 +569,6 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         with open(combined_json_path, 'w', encoding='utf-8') as f:
             json.dump(all_cells, f, ensure_ascii=False, indent=2)
         
-        log_to_state(hash_id, "合并的JSON已保存")
-        
         processing_state[hash_id].update({
             'generate_progress': 60,
             'generate_status': 'Saving Markdown...'
@@ -532,12 +580,11 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         with open(combined_md_path, 'w', encoding='utf-8') as f:
             f.write(combined_md)
         
-        log_to_state(hash_id, "合并的Markdown已保存")
-        
         # 保存合并的TXT
         combined_txt_path = work_dir / f"{base_name}_{hash_id}_combined.txt"
         create_txt_file(combined_md, str(combined_txt_path))
-        log_to_state(hash_id, "合并的TXT已保存")
+        
+        log_to_state(hash_id, "💾 已保存 JSON、Markdown、TXT 文件", log_level='normal')
 
         processing_state[hash_id].update({
             'generate_progress': 75,
@@ -546,9 +593,9 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         
         # 生成DOCX (Pass list of parts for splitting)
         docx_path = work_dir / f"{base_name}_{hash_id}.docx"
-        markdown_to_docx(all_md_parts, str(docx_path), split_every=300)
+        generated_files = markdown_to_docx(all_md_parts, str(docx_path), split_every=300)
         
-        log_to_state(hash_id, "DOCX文档已生成")
+        log_to_state(hash_id, f"📄 已生成 {len(generated_files)} 个 DOCX 文件", log_level='normal')
         
         processing_state[hash_id].update({
             'generate_progress': 90,
@@ -558,9 +605,9 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
         # 创建ZIP
         create_zip_package(work_dir, base_name, hash_id)
         
-        log_to_state(hash_id, "ZIP包已创建")
+        log_to_state(hash_id, "📦 ZIP 打包完成", log_level='normal')
         
-        processing_time = f"{time.time() - start_time:.2f}s"
+        processing_time = f"{time.time() - start_time:.1f}s"
         
         # 完成
         processing_state[hash_id].update({
@@ -573,11 +620,11 @@ def process_pdf_background(pdf_path, work_dir, base_name, hash_id, process_mode,
             'processing_time': processing_time
         })
         
-        log_to_state(hash_id, f"所有处理完成！总耗时: {processing_time}")
+        log_to_state(hash_id, f"🎉 处理完成！\n📊 总页数: {total_pages}\n⏱️ 总耗时: {processing_time}\n📦 文件已准备好下载", log_level='important')
     
     except Exception as e:
         error_msg = str(e)
-        log_to_state(hash_id, f"处理失败: {error_msg}")
+        log_to_state(hash_id, f"处理失败: {error_msg}", log_level='important')
         processing_state[hash_id].update({
             'complete': True,
             'error': error_msg
@@ -598,7 +645,7 @@ def worker():
             # Update state to processing
             if hash_id in processing_state:
                 processing_state[hash_id]['status'] = 'Processing'
-                log_to_state(hash_id, "Starting processing...")
+                log_to_state(hash_id, "Starting processing...", log_level='normal')
             
             try:
                 func(*args)
@@ -726,25 +773,75 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                         name_parts = item.name.rsplit('_', 1)
                         if len(name_parts) == 2:
                             base_name, hash_id = name_parts
+                            
+                            # Collect file information
+                            file_info = {
+                                'name': base_name,
+                                'hash_id': hash_id,
+                                'pages': 0,
+                                'status': 'incomplete',
+                                'has_zip': False,
+                                'has_docx': False,
+                                'has_json': False,
+                                'has_md': False,
+                                'has_images_zip': False,
+                                'is_processing': False,
+                                'processing_progress': 0
+                            }
+                            
+                            # Check if currently processing
+                            if hash_id in processing_state:
+                                state = processing_state[hash_id]
+                                if not state.get('complete', False):
+                                    file_info['is_processing'] = True
+                                    file_info['status'] = state.get('status', 'processing')
+                                    # Calculate average progress
+                                    extract_prog = state.get('extract_progress', 0)
+                                    ocr_prog = state.get('ocr_progress', 0)
+                                    gen_prog = state.get('generate_progress', 0)
+                                    file_info['processing_progress'] = int((extract_prog + ocr_prog + gen_prog) / 3)
+                            
+                            # Check what files exist
                             json_file = item / f"{base_name}_{hash_id}_combined.json"
-                            pages = 0
                             if json_file.exists():
+                                file_info['has_json'] = True
                                 try:
                                     with open(json_file, 'r', encoding='utf-8') as f:
                                         data = json.load(f)
-                                        pages = len(data)
+                                        file_info['pages'] = len(data)
                                 except:
                                     pass
                             
-                            # Check if complete (zip exists)
+                            md_file = item / f"{base_name}_{hash_id}_combined.md"
+                            if md_file.exists():
+                                file_info['has_md'] = True
+                            
+                            docx_path = item / f"{base_name}_{hash_id}.docx"
+                            if docx_path.exists():
+                                file_info['has_docx'] = True
+                            
                             zip_path = item / f"{base_name}_{hash_id}.zip"
                             if zip_path.exists():
-                                files.append({
-                                    'name': base_name,
-                                    'hash_id': hash_id,
-                                    'pages': pages,
-                                    'status': 'complete'
-                                })
+                                file_info['has_zip'] = True
+                                file_info['status'] = 'complete'
+                            
+                            images_zip_path = item / f"{base_name}_{hash_id}_images.zip"
+                            if images_zip_path.exists():
+                                file_info['has_images_zip'] = True
+                            
+                            # Determine status based on files (if not processing)
+                            if not file_info['is_processing']:
+                                if file_info['has_zip']:
+                                    file_info['status'] = 'complete'
+                                elif file_info['has_docx'] or file_info['has_json']:
+                                    file_info['status'] = 'partial'
+                                else:
+                                    file_info['status'] = 'incomplete'
+                            
+                            files.append(file_info)
+                
+                # Sort by name
+                files.sort(key=lambda x: x['name'])
                 
                 response_data = json.dumps({'files': files}).encode('utf-8')
                 self.send_response(200)
@@ -752,6 +849,33 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(response_data)))
                 self.end_headers()
                 self.wfile.write(response_data)
+                return
+            
+            elif self.path.startswith('/stop_processing'):
+                # Get hash_id from query string
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    hash_id = params.get('hash_id', '')
+                    
+                    if hash_id in processing_state:
+                        processing_state[hash_id]['stopped'] = True
+                        processing_state[hash_id]['complete'] = True
+                        processing_state[hash_id]['error'] = 'Stopped by user'
+                        log_to_state(hash_id, "处理已被用户停止", log_level='important')
+                        
+                        response = {'success': True, 'message': 'Processing stopped'}
+                    else:
+                        response = {'success': False, 'message': 'Task not found'}
+                    
+                    response_data = json.dumps(response).encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.send_header('Content-Length', str(len(response_data)))
+                    self.end_headers()
+                    self.wfile.write(response_data)
+                else:
+                    self.send_error(400, "Missing hash_id")
                 return
 
             elif self.path.startswith('/font/'):

@@ -5,7 +5,7 @@ echo ==========================================
 echo Starting DotsOCR PDF Converter Server...
 echo ==========================================
 cd pdf_converter
-python server.py
+C:\ProgramData\miniconda3\python.exe f:/dots_ocr_suite/pdf_converter/server.py
 echo.
 echo Server stopped or crashed.
 echo Restarting in 5 seconds... Press Ctrl+C to abort.

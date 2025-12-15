@@ -47,8 +47,9 @@ exec vllm serve /workspace/weights/DotsOCR \
     --host 0.0.0.0 \
     --port "$PORT" \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.7 \
-    --max-num-batched-tokens 2048 \
+    --gpu-memory-utilization 0.9 \
+    --max-num-batched-tokens 16384 \
+    --max-model-len 32768 \
     --chat-template-content-format string \
     --served-model-name dots-ocr \
     --trust-remote-code \

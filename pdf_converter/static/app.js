@@ -3,6 +3,8 @@
 let fileQueue = [];
 let isProcessing = false;
 let serverInfo = {};
+let currentDetailId = null;
+let detailPollingInterval = null;
 
 // DOM Elements
 const dropZone = document.getElementById('dropZone');
@@ -138,13 +140,47 @@ async function loadHistory() {
             const data = await res.json();
             if (data.files && data.files.length > 0) {
                 data.files.forEach(f => {
-                    // Only add if not already in queue (by hash_id)
-                    if (!fileQueue.some(q => q.hashId === f.hash_id)) {
-                        fileQueue.push({
+                    // Check if already in queue
+                    const existingItem = fileQueue.find(q => q.hashId === f.hash_id);
+                    
+                    if (existingItem) {
+                        // Update existing item with latest status
+                        if (f.is_processing) {
+                            existingItem.status = 'processing';
+                            existingItem.progress = f.processing_progress;
+                            pollFileProgress(existingItem);
+                        } else {
+                            // Update status from file system
+                            if (f.status === 'complete') {
+                                existingItem.status = 'complete';
+                                existingItem.progress = 100;
+                            } else if (f.status === 'partial') {
+                                existingItem.status = 'partial';
+                                existingItem.progress = 75;
+                            }
+                        }
+                        existingItem.fileInfo = f;
+                    } else {
+                        // Add new item
+                        let status = 'complete';
+                        let progress = 100;
+                        
+                        if (f.is_processing) {
+                            status = 'processing';
+                            progress = f.processing_progress;
+                        } else if (f.status === 'partial') {
+                            status = 'partial';
+                            progress = 75;
+                        } else if (f.status === 'incomplete') {
+                            status = 'incomplete';
+                            progress = 25;
+                        }
+                        
+                        const newItem = {
                             id: 'hist_' + f.hash_id,
-                            file: { name: f.name + '.pdf', size: 0 }, // Mock file object
-                            status: 'complete',
-                            progress: 100,
+                            file: { name: f.name + '.pdf', size: 0 },
+                            status: status,
+                            progress: progress,
                             hashId: f.hash_id,
                             result: {
                                 filename: f.name,
@@ -152,8 +188,14 @@ async function loadHistory() {
                                 processing_time: 'History'
                             },
                             error: null,
-                            isHistory: true
-                        });
+                            isHistory: true,
+                            fileInfo: f
+                        };
+                        fileQueue.push(newItem);
+                        
+                        if (status === 'processing' || status === 'queued') {
+                            pollFileProgress(newItem);
+                        }
                     }
                 });
                 updateUI();
@@ -213,7 +255,7 @@ function renderFileList() {
         <div class="file-item" id="file-${item.id}">
             <div class="col-select">
                 <input type="checkbox" class="file-checkbox" data-id="${item.id}" 
-                    ${item.status === 'complete' ? '' : 'disabled'}
+                    ${(item.status === 'complete' || item.status === 'partial') ? '' : 'disabled'}
                     onchange="updateDownloadButton()">
             </div>
             <div class="col-name" title="${item.file.name}">${item.file.name}</div>
@@ -227,9 +269,11 @@ function renderFileList() {
                 <div style="font-size: 0.8em; color: #888; text-align: right;">${Math.round(item.progress)}%</div>
             </div>
             <div class="col-action">
-                ${item.status === 'complete' ? 
-                    `<button class="small" onclick="showDetail('${item.id}')">查看</button>` : 
-                    (item.status === 'processing' || item.status === 'queued' ? `<button class="small" onclick="showDetail('${item.id}')">監控</button>` : '')}
+                ${item.status === 'processing' || item.status === 'queued' ? 
+                    `<button class="small" onclick="showDetail('${item.id}')">監控</button> <button class="small secondary" onclick="stopProcessing('${item.id}')">停止</button>` :
+                    (item.status === 'complete' || item.status === 'partial' ? 
+                        `<button class="small" onclick="showDetail('${item.id}')">查看</button>` : 
+                        `<button class="small" onclick="reprocessFile('${item.id}')">重新處理</button>`)}
             </div>
         </div>
     `).join('');
@@ -240,8 +284,12 @@ function getStatusText(status) {
         'waiting': '等待中',
         'uploading': '上傳中',
         'queued': '排隊中',
+        'Queued': '排隊中',
         'processing': '處理中',
+        'Processing': '處理中',
         'complete': '完成',
+        'partial': '部分完成',
+        'incomplete': '未完成',
         'error': '錯誤'
     };
     return map[status] || status;
@@ -315,7 +363,9 @@ async function uploadAndQueueFile(item) {
 }
 
 async function pollFileProgress(item) {
-    const interval = setInterval(async () => {
+    if (item.pollingInterval) return;
+
+    item.pollingInterval = setInterval(async () => {
         try {
             const response = await fetch('/progress/' + item.hashId);
             const data = await response.json();
@@ -333,7 +383,8 @@ async function pollFileProgress(item) {
             if (data.ocr_status && data.ocr_status.includes('Page')) item.status = 'processing';
             
             if (data.complete) {
-                clearInterval(interval);
+                clearInterval(item.pollingInterval);
+                item.pollingInterval = null;
                 if (data.error) {
                     item.status = 'error';
                     item.error = data.error;
@@ -354,7 +405,8 @@ async function pollFileProgress(item) {
             }
             
         } catch (e) {
-            clearInterval(interval);
+            clearInterval(item.pollingInterval);
+            item.pollingInterval = null;
             item.status = 'error';
             item.error = e.message;
             updateItemUI(item);
@@ -390,8 +442,6 @@ function updateItemUI(item) {
 }
 
 // Detail View
-let currentDetailId = null;
-
 function showDetail(id) {
     currentDetailId = id;
     const item = fileQueue.find(f => f.id === id);
@@ -400,27 +450,95 @@ function showDetail(id) {
     document.getElementById('progressSection').style.display = 'block';
     document.getElementById('detailTitle').textContent = `詳情: ${item.file.name}`;
     
+    // Update action buttons
+    const detailActions = document.getElementById('detailActions');
+    if (item.status === 'processing' || item.status === 'queued') {
+        detailActions.innerHTML = `<button class="secondary" onclick="stopProcessing('${item.id}')">⏹️ 停止處理</button>`;
+    } else {
+        detailActions.innerHTML = '';
+    }
+    
     // Scroll to detail section
     document.getElementById('progressSection').scrollIntoView({ behavior: 'smooth' });
     
-    // If complete, show results
-    if (item.status === 'complete' && item.result) {
+    // Start polling if processing
+    if (item.status === 'processing' || item.status === 'queued' || item.status === 'uploading' || item.status === 'waiting') {
+        startDetailPolling();
+    } else {
+        stopDetailPolling();
+        // Ensure progress bars show complete if status is complete
+        if (item.status === 'complete') {
+             updateProgress('extract', 100, 'Complete');
+             updateProgress('ocr', 100, 'Complete');
+             updateProgress('generate', 100, 'Complete');
+        }
+    }
+    
+    // If complete or partial, show results
+    if ((item.status === 'complete' || item.status === 'partial') && item.result) {
         // Show result buttons
         const resultSection = document.getElementById('resultSection');
         resultSection.style.display = 'block';
-        resultSection.innerHTML = `
-            <h3>✅ ${item.file.name} 完成!</h3>
-            <div class="result-info">
-                <p><strong>檔名:</strong> ${item.result.filename || 'Unknown'}</p>
-                <p><strong>頁數:</strong> ${item.result.total_pages || 'Unknown'}</p>
-                <p><strong>耗時:</strong> ${item.result.processing_time || 'Unknown'}</p>
-            </div>
-            <div class="download-buttons">
-                <button onclick="downloadSingle('${item.hashId}', 'zip')">📦 下載 ZIP 包</button>
-                <button class="secondary" onclick="downloadSingle('${item.hashId}', 'docx')">📄 僅 DOCX</button>
-                <button class="secondary" onclick="downloadSingle('${item.hashId}', 'txt')">📄 僅 TXT</button>
-            </div>
-        `;
+        
+        let statusIcon = item.status === 'complete' ? '✅' : '⚠️';
+        let downloadButtons = '';
+        
+        // Check what files are available
+        if (item.fileInfo) {
+            const info = item.fileInfo;
+            downloadButtons = '<div class="download-buttons">';
+            
+            if (info.has_zip) {
+                downloadButtons += `<button onclick="downloadSingle('${item.hashId}', 'zip')">📦 下載 ZIP 包</button>`;
+            }
+            if (info.has_docx) {
+                downloadButtons += `<button class="secondary" onclick="downloadSingle('${item.hashId}', 'docx')">📄 僅 DOCX</button>`;
+            }
+            if (info.has_md) {
+                downloadButtons += `<button class="secondary" onclick="downloadSingle('${item.hashId}', 'txt')">📄 僅 TXT</button>`;
+            }
+            if (info.has_images_zip) {
+                downloadButtons += `<button class="secondary" onclick="downloadSingle('${item.hashId}', 'images_zip')">🖼️ 圖片 ZIP</button>`;
+            }
+            
+            downloadButtons += '</div>';
+            
+            // Show file availability
+            let fileStatus = '<div style="margin-top: 10px; font-size: 0.9em;">';
+            fileStatus += '<strong>可用文件:</strong><br>';
+            fileStatus += `ZIP 包: ${info.has_zip ? '✅' : '❌'} | `;
+            fileStatus += `DOCX: ${info.has_docx ? '✅' : '❌'} | `;
+            fileStatus += `JSON: ${info.has_json ? '✅' : '❌'} | `;
+            fileStatus += `MD: ${info.has_md ? '✅' : '❌'} | `;
+            fileStatus += `圖片 ZIP: ${info.has_images_zip ? '✅' : '❌'}`;
+            fileStatus += '</div>';
+            
+            resultSection.innerHTML = `
+                <h3>${statusIcon} ${item.file.name} ${item.status === 'complete' ? '完成' : '部分完成'}!</h3>
+                <div class="result-info">
+                    <p><strong>檔名:</strong> ${item.result.filename || 'Unknown'}</p>
+                    <p><strong>頁數:</strong> ${item.result.total_pages || 'Unknown'}</p>
+                    <p><strong>耗時:</strong> ${item.result.processing_time || 'Unknown'}</p>
+                </div>
+                ${fileStatus}
+                ${downloadButtons}
+            `;
+        } else {
+            // Fallback for items without fileInfo
+            resultSection.innerHTML = `
+                <h3>${statusIcon} ${item.file.name} 完成!</h3>
+                <div class="result-info">
+                    <p><strong>檔名:</strong> ${item.result.filename || 'Unknown'}</p>
+                    <p><strong>頁數:</strong> ${item.result.total_pages || 'Unknown'}</p>
+                    <p><strong>耗時:</strong> ${item.result.processing_time || 'Unknown'}</p>
+                </div>
+                <div class="download-buttons">
+                    <button onclick="downloadSingle('${item.hashId}', 'zip')">📦 下載 ZIP 包</button>
+                    <button class="secondary" onclick="downloadSingle('${item.hashId}', 'docx')">📄 僅 DOCX</button>
+                    <button class="secondary" onclick="downloadSingle('${item.hashId}', 'txt')">📄 僅 TXT</button>
+                </div>
+            `;
+        }
     } else {
         document.getElementById('resultSection').style.display = 'none';
     }
@@ -438,7 +556,10 @@ function updateDetailView(data) {
     }
     
     if (data.log) {
-        logger.info(data.log);
+        const lastEntry = logger.entries[logger.entries.length - 1];
+        if (!lastEntry || lastEntry.message !== data.log) {
+            logger.info(data.log);
+        }
     }
 }
 
@@ -507,3 +628,199 @@ async function downloadSelected() {
 window.showDetail = showDetail;
 window.downloadSingle = downloadSingle;
 window.updateDownloadButton = updateDownloadButton;
+window.reprocessFile = reprocessFile;
+window.stopProcessing = stopProcessing;
+window.loadHistory = loadHistory;
+
+// Stop processing function
+async function stopProcessing(itemId) {
+    const item = fileQueue.find(f => f.id === itemId);
+    if (!item || !item.hashId) return;
+    
+    if (!confirm(`確定要停止處理 "${item.file.name}" 嗎？`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/stop_processing?hash_id=${item.hashId}`);
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+                logger.warning(`已停止處理: ${item.file.name}`);
+                item.status = 'error';
+                item.error = 'Stopped by user';
+                updateUI();
+            } else {
+                alert('停止失敗: ' + data.message);
+            }
+        } else {
+            alert('停止請求失敗');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('停止錯誤');
+    }
+}
+
+// Auto refresh status for processing items - REMOVED to prevent UI lag
+// Instead, we rely on individual file polling initiated in loadHistory or uploadAndQueueFile
+/*
+setInterval(async () => {
+    const processingItems = fileQueue.filter(item => 
+        item.status === 'processing' || item.status === 'queued'
+    );
+    
+    if (processingItems.length > 0) {
+        // Reload history to get updated status
+        await loadHistory();
+    }
+}, 2000); // Refresh every 2 seconds
+*/
+
+// Detail page polling
+function startDetailPolling() {
+    // Clear existing interval
+    if (detailPollingInterval) {
+        clearInterval(detailPollingInterval);
+    }
+    
+    // Poll immediately
+    pollDetailProgress();
+    
+    // Set up interval
+    detailPollingInterval = setInterval(pollDetailProgress, 1000);
+}
+
+function stopDetailPolling() {
+    if (detailPollingInterval) {
+        clearInterval(detailPollingInterval);
+        detailPollingInterval = null;
+    }
+}
+
+async function pollDetailProgress() {
+    if (!currentDetailId) {
+        stopDetailPolling();
+        return;
+    }
+    
+    const item = fileQueue.find(f => f.id === currentDetailId);
+    if (!item || !item.hashId) {
+        stopDetailPolling();
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/progress/${item.hashId}`);
+        if (response.ok) {
+            const data = await response.json();
+            
+            // Safety check: if local status is complete but server returns empty/initial state, ignore it
+            // This happens if server restarted and lost memory state
+            if (item.status === 'complete' && !data.complete && data.extract_progress === 0 && data.ocr_progress === 0) {
+                stopDetailPolling();
+                return;
+            }
+
+            // Update progress bars
+            updateDetailView(data);
+            
+            // Update item in queue
+            if (data.complete) {
+                // Refresh from server to get final status
+                await loadHistory();
+                
+                // If has result, update detail view
+                if (!data.error) {
+                    item.status = 'complete';
+                    item.progress = 100;
+                    item.result = {
+                        filename: data.filename || item.file.name,
+                        total_pages: data.total_pages || 0,
+                        processing_time: data.processing_time || 'Unknown'
+                    };
+                    
+                    // Refresh detail view to show download buttons
+                    showDetail(currentDetailId);
+                } else {
+                    item.status = 'error';
+                    item.error = data.error;
+                }
+                
+                updateUI();
+                stopDetailPolling();
+            } else {
+                // Update status while processing
+                const status = data.status || 'processing';
+                if (item.status !== status) {
+                    item.status = status;
+                    
+                    // Update action buttons in detail view
+                    const detailActions = document.getElementById('detailActions');
+                    if (detailActions && (status === 'processing' || status === 'queued')) {
+                        detailActions.innerHTML = `<button class="secondary" onclick="stopProcessing('${item.id}')">⏹️ 停止處理</button>`;
+                    }
+                    
+                    updateUI();
+                }
+                
+                // Calculate overall progress
+                const extractProg = data.extract_progress || 0;
+                const ocrProg = data.ocr_progress || 0;
+                const genProg = data.generate_progress || 0;
+                item.progress = Math.round((extractProg + ocrProg + genProg) / 3);
+                updateUI();
+            }
+        }
+    } catch (e) {
+        console.error('Error polling progress:', e);
+    }
+}
+
+// Reprocess file function
+async function reprocessFile(itemId) {
+    const item = fileQueue.find(f => f.id === itemId);
+    if (!item || !item.hashId) return;
+    
+    if (!confirm(`確定要重新處理 "${item.file.name}" 嗎？這將重新運行 OCR 處理。`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/reprocess', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                hash_id: item.hashId,
+                process_mode: 'all'
+            })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            
+            // Update item status immediately
+            item.status = 'queued';
+            item.progress = 0;
+            item.error = null;
+            
+            // Clear any previous result
+            if (item.result) {
+                item.result = null;
+            }
+            
+            updateUI();
+            
+            // Show detail to monitor and start polling
+            showDetail(itemId);
+            
+            logger.info(`已提交重新處理請求: ${item.file.name}`);
+        } else {
+            alert('重新處理請求失敗');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('重新處理錯誤');
+    }
+}
