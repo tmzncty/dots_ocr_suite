@@ -1207,29 +1207,72 @@ class PDFConverterHandler(http.server.BaseHTTPRequestHandler):
                 batch_zip_name = f"batch_download_{timestamp}.zip"
                 batch_zip_path = DATA_DIR / batch_zip_name
                 
-                with zipfile.ZipFile(batch_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for hash_id in hash_ids:
-                        # Find the file directory
-                        found = False
-                        for item in DATA_DIR.iterdir():
-                            if item.is_dir() and hash_id in item.name:
-                                base_name = item.name.replace(f"_{hash_id}", "")
-                                docx_path = item / f"{base_name}_{hash_id}.docx"
-                                if docx_path.exists():
-                                    zipf.write(docx_path, f"{base_name}.docx")
-                                    found = True
-                                break
-                        if not found:
-                            logger.warning(f"File not found for batch download: {hash_id}")
-                
-                self.send_file(batch_zip_path, 'application/zip')
-                # Clean up after sending? Ideally yes, but send_file is synchronous here so we can delete after.
-                # But send_file returns, so we can delete after calling it?
-                # send_file writes to wfile.
                 try:
-                    os.remove(batch_zip_path)
-                except:
-                    pass
+                    with zipfile.ZipFile(batch_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for hash_id in hash_ids:
+                            # Find the file directory
+                            found = False
+                            for item in DATA_DIR.iterdir():
+                                if item.is_dir() and hash_id in item.name:
+                                    base_name = item.name.replace(f"_{hash_id}", "")
+                                    
+                                    # Try to add the individual zip package first (contains all files)
+                                    zip_package = item / f"{base_name}_{hash_id}.zip"
+                                    if zip_package.exists():
+                                        # Add the entire zip package to the batch zip
+                                        zipf.write(zip_package, f"{base_name}/{base_name}_{hash_id}.zip")
+                                        found = True
+                                    else:
+                                        # If no zip package, add individual files
+                                        files_added = False
+                                        
+                                        # Add DOCX if exists
+                                        docx_path = item / f"{base_name}_{hash_id}.docx"
+                                        if docx_path.exists():
+                                            zipf.write(docx_path, f"{base_name}/{base_name}_{hash_id}.docx")
+                                            files_added = True
+                                        
+                                        # Add combined markdown if exists
+                                        md_path = item / f"{base_name}_{hash_id}_combined.md"
+                                        if md_path.exists():
+                                            zipf.write(md_path, f"{base_name}/{base_name}_{hash_id}.md")
+                                            files_added = True
+                                        
+                                        # Add combined txt if exists
+                                        txt_path = item / f"{base_name}_{hash_id}_combined.txt"
+                                        if txt_path.exists():
+                                            zipf.write(txt_path, f"{base_name}/{base_name}_{hash_id}.txt")
+                                            files_added = True
+                                        
+                                        # Add combined json if exists
+                                        json_path = item / f"{base_name}_{hash_id}_combined.json"
+                                        if json_path.exists():
+                                            zipf.write(json_path, f"{base_name}/{base_name}_{hash_id}.json")
+                                            files_added = True
+                                        
+                                        if files_added:
+                                            found = True
+                                    
+                                    break
+                            
+                            if not found:
+                                logger.warning(f"No files found for batch download: {hash_id}")
+                    
+                    # Check if zip file has any content
+                    if batch_zip_path.stat().st_size > 100:  # More than just empty zip structure
+                        self.send_file(batch_zip_path, 'application/zip')
+                    else:
+                        logger.error("Batch zip file is empty")
+                        self.send_json_error(404, "No files could be added to the batch download")
+                        
+                finally:
+                    # Clean up the temporary batch zip file
+                    try:
+                        if batch_zip_path.exists():
+                            os.remove(batch_zip_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove temporary batch zip: {e}")
+                
                 return
             
             self.send_json_error(404, "Not found")

@@ -251,8 +251,18 @@ function updateUI() {
 
 function renderFileList() {
     if (!fileListContainer) return;
-    fileListContainer.innerHTML = fileQueue.map(item => `
-        <div class="file-item" id="file-${item.id}">
+    fileListContainer.innerHTML = fileQueue.map(item => {
+        let actionButtons = '';
+        if (item.status === 'complete' || item.status === 'partial') {
+            actionButtons = `<button class="small" onclick="showDetail('${item.id}')">查看</button>`;
+        } else if (item.status === 'processing' || item.status === 'queued' || item.status === 'uploading' || item.status === 'waiting') {
+            actionButtons = `<button class="small" onclick="showDetail('${item.id}')">監控</button> <button class="small secondary" onclick="stopProcessing('${item.id}')">停止</button>`;
+        } else {
+            actionButtons = `<button class="small" onclick="reprocessFile('${item.id}')">繼續處理</button>`;
+        }
+        
+        return `
+        <div class="file-item" id="file-${item.id}" data-last-status="${item.status}">
             <div class="col-select">
                 <input type="checkbox" class="file-checkbox" data-id="${item.id}" 
                     ${(item.status === 'complete' || item.status === 'partial') ? '' : 'disabled'}
@@ -269,14 +279,11 @@ function renderFileList() {
                 <div style="font-size: 0.8em; color: #888; text-align: right;">${Math.round(item.progress)}%</div>
             </div>
             <div class="col-action">
-                ${item.status === 'processing' || item.status === 'queued' ? 
-                    `<button class="small" onclick="showDetail('${item.id}')">監控</button> <button class="small secondary" onclick="stopProcessing('${item.id}')">停止</button>` :
-                    (item.status === 'complete' || item.status === 'partial' ? 
-                        `<button class="small" onclick="showDetail('${item.id}')">查看</button>` : 
-                        `<button class="small" onclick="reprocessFile('${item.id}')">重新處理</button>`)}
+                ${actionButtons}
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function getStatusText(status) {
@@ -395,6 +402,9 @@ async function pollFileProgress(item) {
                 }
                 updateItemUI(item);
                 updateDownloadButton(); // Enable checkbox if complete
+                
+                // Reload history to get final file info
+                await loadHistory();
             } else {
                 updateItemUI(item);
             }
@@ -411,7 +421,7 @@ async function pollFileProgress(item) {
             item.error = e.message;
             updateItemUI(item);
         }
-    }, 1000);
+    }, 3000);
 }
 
 function updateItemUI(item) {
@@ -434,10 +444,18 @@ function updateItemUI(item) {
     }
     
     const actionCol = el.querySelector('.col-action');
-    if (item.status === 'complete') {
-        actionCol.innerHTML = `<button class="small" onclick="showDetail('${item.id}')">查看</button>`;
-    } else if (item.status === 'processing' || item.status === 'queued') {
-        actionCol.innerHTML = `<button class="small" onclick="showDetail('${item.id}')">監控</button>`;
+    // Only update action buttons if status changed to avoid rebuilding DOM
+    const currentStatus = el.dataset.lastStatus;
+    if (currentStatus !== item.status) {
+        el.dataset.lastStatus = item.status;
+        
+        if (item.status === 'complete' || item.status === 'partial') {
+            actionCol.innerHTML = `<button class="small" onclick="showDetail('${item.id}')">查看</button>`;
+        } else if (item.status === 'processing' || item.status === 'queued' || item.status === 'uploading' || item.status === 'waiting') {
+            actionCol.innerHTML = `<button class="small" onclick="showDetail('${item.id}')">監控</button> <button class="small secondary" onclick="stopProcessing('${item.id}')">停止</button>`;
+        } else {
+            actionCol.innerHTML = `<button class="small" onclick="reprocessFile('${item.id}')">繼續處理</button>`;
+        }
     }
 }
 
@@ -452,10 +470,10 @@ function showDetail(id) {
     
     // Update action buttons
     const detailActions = document.getElementById('detailActions');
-    if (item.status === 'processing' || item.status === 'queued') {
+    if (item.status === 'processing' || item.status === 'queued' || item.status === 'uploading' || item.status === 'waiting') {
         detailActions.innerHTML = `<button class="secondary" onclick="stopProcessing('${item.id}')">⏹️ 停止處理</button>`;
     } else {
-        detailActions.innerHTML = '';
+        detailActions.innerHTML = `<button class="secondary" onclick="reprocessFile('${item.id}')">🔄 繼續處理</button>`;
     }
     
     // Scroll to detail section
@@ -689,7 +707,7 @@ function startDetailPolling() {
     pollDetailProgress();
     
     // Set up interval
-    detailPollingInterval = setInterval(pollDetailProgress, 1000);
+    detailPollingInterval = setInterval(pollDetailProgress, 3000);
 }
 
 function stopDetailPolling() {
@@ -758,11 +776,15 @@ async function pollDetailProgress() {
                     
                     // Update action buttons in detail view
                     const detailActions = document.getElementById('detailActions');
-                    if (detailActions && (status === 'processing' || status === 'queued')) {
-                        detailActions.innerHTML = `<button class="secondary" onclick="stopProcessing('${item.id}')">⏹️ 停止處理</button>`;
+                    if (detailActions) {
+                        if (status === 'processing' || status === 'queued' || status === 'uploading' || status === 'waiting') {
+                            detailActions.innerHTML = `<button class="secondary" onclick="stopProcessing('${item.id}')">⏹️ 停止處理</button>`;
+                        } else {
+                            detailActions.innerHTML = `<button class="secondary" onclick="reprocessFile('${item.id}')">🔄 繼續處理</button>`;
+                        }
                     }
                     
-                    updateUI();
+                    updateItemUI(item);
                 }
                 
                 // Calculate overall progress
@@ -770,7 +792,7 @@ async function pollDetailProgress() {
                 const ocrProg = data.ocr_progress || 0;
                 const genProg = data.generate_progress || 0;
                 item.progress = Math.round((extractProg + ocrProg + genProg) / 3);
-                updateUI();
+                updateItemUI(item);
             }
         }
     } catch (e) {
@@ -783,7 +805,7 @@ async function reprocessFile(itemId) {
     const item = fileQueue.find(f => f.id === itemId);
     if (!item || !item.hashId) return;
     
-    if (!confirm(`確定要重新處理 "${item.file.name}" 嗎？這將重新運行 OCR 處理。`)) {
+    if (!confirm(`確定要繼續處理 "${item.file.name}" 嗎？這將補充處理未完成的頁面。`)) {
         return;
     }
     
@@ -815,12 +837,12 @@ async function reprocessFile(itemId) {
             // Show detail to monitor and start polling
             showDetail(itemId);
             
-            logger.info(`已提交重新處理請求: ${item.file.name}`);
+            logger.info(`已提交繼續處理請求: ${item.file.name}`);
         } else {
-            alert('重新處理請求失敗');
+            alert('繼續處理請求失敗');
         }
     } catch (e) {
         console.error(e);
-        alert('重新處理錯誤');
+        alert('繼續處理錯誤');
     }
 }
